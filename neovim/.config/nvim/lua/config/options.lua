@@ -4,7 +4,13 @@
 vim.opt.exrc = true
 vim.opt.secure = true
 vim.opt.cursorline = false
-vim.opt.formatoptions:remove({ "c", "r", "o" })
+
+vim.api.nvim_create_autocmd("FileType", {
+  desc = "Disable auto comment continuation",
+  callback = function()
+    vim.opt_local.formatoptions:remove({ "c", "r", "o" })
+  end,
+})
 
 if vim.env.SSH_CONNECTION then
   vim.g.clipboard = {

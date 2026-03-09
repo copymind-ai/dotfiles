@@ -5,13 +5,6 @@ return {
       -- Remove the clock from the right section
       opts.sections = opts.sections or {}
       opts.sections.lualine_z = {}
-      -- Remove lazy.nvim plugin count
-      for i = #opts.sections.lualine_x, 1, -1 do
-        local comp = opts.sections.lualine_x[i]
-        if type(comp) == "table" and comp[1] == require("lazy.status").updates then
-          table.remove(opts.sections.lualine_x, i)
-        end
-      end
       -- Remove lazy.nvim plugin count and git diff
       for i = #opts.sections.lualine_x, 1, -1 do
         local comp = opts.sections.lualine_x[i]
