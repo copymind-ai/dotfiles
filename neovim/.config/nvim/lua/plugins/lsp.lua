@@ -8,6 +8,9 @@ return {
         underlines = true,
         update_in_insert = false,
       },
+      servers = {
+        ts_ls = {},
+      },
     },
   },
 }
