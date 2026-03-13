@@ -27,7 +27,7 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/too
 ## Installation
 
 ```bash
-git clone https://github.com/vossenwout/pookie-dotfiles.git ~/dotfiles
+git clone https://github.com/copymind-team/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 stow neovim
 stow tmux
