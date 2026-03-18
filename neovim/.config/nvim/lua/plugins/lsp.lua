@@ -10,6 +10,7 @@ return {
       },
       servers = {
         vtsls = {},
+        ts_ls = { enabled = false },
       },
     },
   },
