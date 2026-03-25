@@ -58,10 +58,10 @@ link "$DOTFILES/ghostty/.config/ghostty"     "$HOME/.config/ghostty"
 if [ ! -d "$HOME/.tmux/plugins/tpm" ]; then
   info "Installing TPM..."
   git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
-  info "Installing tmux plugins..."
-  "$HOME/.tmux/plugins/tpm/bin/install_plugins"
 else
   ok "TPM already installed"
 fi
+info "Installing tmux plugins..."
+"$HOME/.tmux/plugins/tpm/bin/install_plugins"
 
 ok "Done!"
