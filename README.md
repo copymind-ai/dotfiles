@@ -21,7 +21,10 @@ dotfiles/
 ├── ghostty/.config/ghostty/
 ├── neovim/.config/nvim/
 ├── scripts/
-│   └── tmux-dev-session.sh
+│   ├── tmux-dev-session.sh
+│   ├── git-worktree.sh
+│   ├── git-worktree-up.sh
+│   └── git-worktree-down.sh
 ├── tmux/.tmux.conf
 ├── zsh/.zshrc
 └── install.sh
@@ -36,6 +39,15 @@ Run `dev` (or `dev ~/path/to/project`) to create a tmux session with preconfigur
 - **docker** — container management
 
 If the session already exists, it reattaches instead of creating a duplicate.
+
+## Git worktrees
+
+Manage isolated worktrees in bare-cloned repos, each with its own Docker Compose port and project name.
+
+- `wt up <branch>` — create a worktree, allocate a port, install deps, build Docker image
+- `wt down <branch>` — stop containers, remove worktree, free the port
+
+Run from any existing worktree in the bare repo. Repo name and paths are detected automatically.
 
 ## Installation
 
