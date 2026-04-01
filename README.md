@@ -20,10 +20,22 @@ Team configuration files for nvim, tmux, ghostty, zsh.
 dotfiles/
 ├── ghostty/.config/ghostty/
 ├── neovim/.config/nvim/
+├── scripts/
+│   └── tmux-dev-session.sh
 ├── tmux/.tmux.conf
 ├── zsh/.zshrc
 └── install.sh
 ```
+
+## Dev session
+
+Run `dev` (or `dev ~/path/to/project`) to create a tmux session with preconfigured windows:
+
+- **claude** — two horizontal panes
+- **nvim** — editor
+- **docker** — container management
+
+If the session already exists, it reattaches instead of creating a duplicate.
 
 ## Installation
 
