@@ -1,8 +1,8 @@
 font-family = "Menlo"
-theme = "Homebrew"
-background-opacity = 1
+theme = "Kanagawa Wave"
+background-opacity = 0.85
 background-blur = true
-font-size = 18
+font-size = 14
 
 keybind = opt+h=goto_split:left
 keybind = opt+j=goto_split:bottom
