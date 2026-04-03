@@ -16,8 +16,17 @@ case "${1:-}" in
     shift
     exec "$SCRIPT_DIR/dev-worktree-down.sh" "$@"
     ;;
+  env)
+    shift
+    exec "$SCRIPT_DIR/dev-worktree-env.sh" "$@"
+    ;;
   *)
-    echo "Usage: dev worktree <up|down> <branch-name>" >&2
+    echo "Usage: dev wt <command> [args]" >&2
+    echo "" >&2
+    echo "Commands:" >&2
+    echo "  up <branch>    Create a git worktree with Docker isolation" >&2
+    echo "  down <branch>  Tear down a git worktree and free the port" >&2
+    echo "  env            Set up .env.local for current worktree" >&2
     exit 1
     ;;
 esac

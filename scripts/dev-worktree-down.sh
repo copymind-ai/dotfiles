@@ -50,6 +50,12 @@ echo "Stopping Docker containers for $PROJECT_NAME..."
 cd "$TARGET_DIR"
 docker compose down --rmi local --volumes --remove-orphans 2>/dev/null || true
 
+# --- Supabase note ---
+if [ -f "$TARGET_DIR/supabase/config.toml" ]; then
+  echo "Note: Shared Supabase instance left running (used by other worktrees)."
+  echo "  To stop: dev supabase down"
+fi
+
 # --- Remove worktree ---
 echo "Removing git worktree..."
 cd "$CURRENT_WORKTREE"

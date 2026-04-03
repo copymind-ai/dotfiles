@@ -5,9 +5,9 @@ set -euo pipefail
 # Usage: dev <command> [args]
 #
 # Commands:
-#   session, s [dir]           Create a tmux dev session
-#   worktree up, wt up <branch>   Create a git worktree with Docker isolation
-#   worktree down, wt down <branch>   Tear down a git worktree
+#   s,  session    Tmux dev sessions
+#   sb, supabase   Shared local Supabase instance
+#   wt, worktree   Git worktrees with Docker isolation
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -20,13 +20,19 @@ case "${1:-}" in
     shift
     exec "$SCRIPT_DIR/dev-worktree.sh" "$@"
     ;;
+  sb|supabase)
+    shift
+    exec "$SCRIPT_DIR/dev-supabase.sh" "$@"
+    ;;
   *)
     echo "Usage: dev <command> [args]" >&2
     echo "" >&2
     echo "Commands:" >&2
-    echo "  session, s [dir]             Create a tmux dev session" >&2
-    echo "  worktree up, wt up <branch>  Create a git worktree with Docker isolation" >&2
-    echo "  worktree down, wt down <branch>  Tear down a git worktree" >&2
+    echo "  s,  session    Tmux dev sessions" >&2
+    echo "  sb, supabase   Shared local Supabase instance" >&2
+    echo "  wt, worktree   Git worktrees with Docker isolation" >&2
+    echo "" >&2
+    echo "Run 'dev <command>' to see subcommands." >&2
     exit 1
     ;;
 esac

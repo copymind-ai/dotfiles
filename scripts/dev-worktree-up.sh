@@ -15,6 +15,7 @@ if [ -z "${1:-}" ]; then
 fi
 
 BRANCH_NAME="$1"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Bare repo check ---
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
@@ -80,6 +81,29 @@ if [ -f "$CURRENT_WORKTREE/.env.local" ]; then
   echo "Copied .env.local from $CURRENT_WORKTREE_NAME"
 else
   echo "Warning: No .env.local found in $CURRENT_WORKTREE_NAME worktree" >&2
+fi
+
+# --- Supabase integration ---
+if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
+  if ! command -v supabase &>/dev/null; then
+    echo "Warning: supabase CLI not found. Skipping Supabase setup." >&2
+  else
+    echo "Detected Supabase project..."
+    if supabase status --output json >/dev/null 2>&1; then
+      echo "Supabase already running (shared instance)."
+    else
+      echo "Starting shared Supabase instance..."
+      echo "(First run pulls ~10 Docker images and may take a few minutes)"
+      (cd "$NEW_WORKTREE_DIR" && supabase start)
+    fi
+
+    # Inject Supabase env vars into .env.local
+    (cd "$NEW_WORKTREE_DIR" && "$SCRIPT_DIR/dev-worktree-env.sh")
+
+    # Apply pending migrations from this branch
+    echo "Applying Supabase migrations..."
+    (cd "$NEW_WORKTREE_DIR" && supabase migration up)
+  fi
 fi
 
 # --- Generate .env for Docker Compose project name ---

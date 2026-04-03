@@ -23,9 +23,11 @@ dotfiles/
 ├── scripts/
 │   ├── dev.sh
 │   ├── dev-session.sh
+│   ├── dev-supabase.sh
 │   ├── dev-worktree.sh
 │   ├── dev-worktree-up.sh
-│   └── dev-worktree-down.sh
+│   ├── dev-worktree-down.sh
+│   └── dev-worktree-env.sh
 ├── tmux/.tmux.conf
 ├── zsh/.zshrc
 └── install.sh
@@ -37,11 +39,34 @@ Unified entry point for development tools.
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `dev session [dir]` | `dev s` | Create a tmux dev session (claude, nvim, docker windows) |
-| `dev worktree up <branch>` | `dev wt up` | Create a git worktree with Docker isolation |
-| `dev worktree down <branch>` | `dev wt down` | Tear down a git worktree and free the port |
+| `dev session` | `dev s` | Tmux dev sessions |
+| `dev supabase` | `dev sb` | Shared local Supabase instance |
+| `dev worktree` | `dev wt` | Git worktrees with Docker isolation |
 
-`dev wt` commands must be run from inside a bare-cloned repo. Repo name and paths are detected automatically.
+### `dev s` — Session
+
+| Command | Description |
+|---------|-------------|
+| `dev s [dir]` | Create a tmux dev session (claude, nvim, docker windows) |
+
+### `dev sb` — Supabase
+
+| Command | Description |
+|---------|-------------|
+| `dev sb up` | Start shared Supabase instance |
+| `dev sb down [--force]` | Stop shared Supabase instance |
+| `dev sb status` | Show Supabase status |
+| `dev sb migrate [--reset]` | Apply pending migrations (or reset all) |
+
+### `dev wt` — Worktree
+
+Must be run from inside a bare-cloned repo. Repo name and paths are detected automatically.
+
+| Command | Description |
+|---------|-------------|
+| `dev wt up <branch>` | Create a git worktree with Docker isolation |
+| `dev wt down <branch>` | Tear down a git worktree and free the port |
+| `dev wt env` | Set up .env.local for current worktree |
 
 ## Installation
 

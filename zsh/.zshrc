@@ -5,7 +5,7 @@ export ZSH="$HOME/.oh-my-zsh"
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
 # Initialize Homebrew tools
-eval "$(/opt/homebrew/bin/brew shellenv)"
+eval "$(cd ~ && /opt/homebrew/bin/brew shellenv)"
 
 ZSH_THEME="robbyrussell"
 

@@ -30,14 +30,22 @@ else
 fi
 
 # --- Packages ---
-for pkg in tmux neovim ripgrep; do
+for pkg in tmux neovim ripgrep jq; do
   if ! command -v "$pkg" &>/dev/null; then
     info "Installing $pkg..."
-    brew install "$pkg"
+    (cd /tmp && brew install "$pkg")
   else
     ok "$pkg already installed"
   fi
 done
+
+# --- Supabase CLI ---
+if ! command -v supabase &>/dev/null; then
+  info "Installing Supabase CLI..."
+  brew install supabase/tap/supabase
+else
+  ok "Supabase CLI already installed"
+fi
 
 # --- Oh My Zsh ---
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
