@@ -26,11 +26,23 @@ if [ -f "$WORKTREE_DIR/supabase/config.toml" ] && command -v supabase &>/dev/nul
     echo "Injecting Supabase env vars..."
     STATUS_JSON="$(supabase status --output json)"
 
-    upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_URL" "$(echo "$STATUS_JSON" | jq -r '.API_URL')"
-    upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_URL_PRIMARY" "$(echo "$STATUS_JSON" | jq -r '.API_URL')"
+    # Replace 127.0.0.1 with localhost so URLs resolve both from the browser
+    # and from inside Docker containers (via extra_hosts: localhost:host-gateway)
+    API_URL="$(echo "$STATUS_JSON" | jq -r '.API_URL' | sed 's/127\.0\.0\.1/localhost/')"
+    DB_URL="$(echo "$STATUS_JSON" | jq -r '.DB_URL' | sed 's/127\.0\.0\.1/localhost/')"
+
+    upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_URL" "$API_URL"
     upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_ANON_KEY" "$(echo "$STATUS_JSON" | jq -r '.ANON_KEY')"
     upsert_env "$ENV_FILE" "SUPABASE_SERVICE_ROLE_KEY" "$(echo "$STATUS_JSON" | jq -r '.SERVICE_ROLE_KEY')"
-    upsert_env "$ENV_FILE" "DATABASE_URL" "$(echo "$STATUS_JSON" | jq -r '.DB_URL')"
+    upsert_env "$ENV_FILE" "DATABASE_URL" "$DB_URL"
+
+    # Docker-specific: server-side code inside containers can't reach "localhost"
+    # on the host. SUPABASE_DOCKER_URL uses host.docker.internal instead.
+    # NEXT_PUBLIC_SUPABASE_COOKIE_NAME aligns cookie names between browser (localhost)
+    # and server (host.docker.internal) Supabase URLs.
+    DOCKER_API_URL="$(echo "$API_URL" | sed 's/localhost/host.docker.internal/')"
+    upsert_env "$ENV_FILE" "SUPABASE_DOCKER_URL" "$DOCKER_API_URL"
+    upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_COOKIE_NAME" "sb-localhost-auth-token"
 
     echo "Updated $ENV_FILE with Supabase connection details."
   else
