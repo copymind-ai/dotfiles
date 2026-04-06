@@ -40,14 +40,6 @@ if [ -f "$WORKTREE_DIR/supabase/config.toml" ] && command -v supabase &>/dev/nul
     upsert_env "$ENV_FILE" "SUPABASE_SERVICE_ROLE_KEY" "$(echo "$STATUS_JSON" | jq -r '.SERVICE_ROLE_KEY')"
     upsert_env "$ENV_FILE" "DATABASE_URL" "$DB_URL"
 
-    # Docker-specific: server-side code inside containers can't reach "localhost"
-    # on the host. SUPABASE_DOCKER_URL uses host.docker.internal instead.
-    # NEXT_PUBLIC_SUPABASE_COOKIE_NAME aligns cookie names between browser (localhost)
-    # and server (host.docker.internal) Supabase URLs.
-    DOCKER_API_URL="$(echo "$API_URL" | sed 's/localhost/host.docker.internal/')"
-    upsert_env "$ENV_FILE" "SUPABASE_DOCKER_URL" "$DOCKER_API_URL"
-    upsert_env "$ENV_FILE" "NEXT_PUBLIC_SUPABASE_COOKIE_NAME" "sb-localhost-auth-token"
-
     echo "Updated $ENV_FILE with Supabase connection details."
   else
     echo "Warning: Supabase project detected but not running. Skipping env injection." >&2
