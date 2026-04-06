@@ -21,10 +21,14 @@ upsert_env() {
 touch "$ENV_FILE"
 
 # --- Supabase ---
+# SUPABASE_STATUS_DIR overrides where `supabase status` runs.
+# Needed when the current worktree's config.toml has different ports
+# than the shared running Supabase instance.
+STATUS_DIR="${SUPABASE_STATUS_DIR:-$WORKTREE_DIR}"
 if [ -f "$WORKTREE_DIR/supabase/config.toml" ] && command -v supabase &>/dev/null; then
-  if supabase status --output json >/dev/null 2>&1; then
+  if (cd "$STATUS_DIR" && supabase status --output json) >/dev/null 2>&1; then
     echo "Injecting Supabase env vars..."
-    STATUS_JSON="$(supabase status --output json)"
+    STATUS_JSON="$(cd "$STATUS_DIR" && supabase status --output json 2>/dev/null | sed -n '/^{/,/^}/p')"
 
     # Replace 127.0.0.1 with localhost so URLs resolve both from the browser
     # and from inside Docker containers (via extra_hosts: localhost:host-gateway)

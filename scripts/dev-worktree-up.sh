@@ -97,12 +97,32 @@ if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
       (cd "$NEW_WORKTREE_DIR" && supabase start)
     fi
 
-    # Inject Supabase env vars into .env.local
-    (cd "$NEW_WORKTREE_DIR" && "$SCRIPT_DIR/dev-worktree-env.sh")
+    # Inject Supabase env vars into .env.local.
+    # Pass SUPABASE_STATUS_DIR so env.sh reads status from the worktree
+    # that started Supabase (which may have different ports in config.toml).
+    (cd "$NEW_WORKTREE_DIR" && SUPABASE_STATUS_DIR="$CURRENT_WORKTREE" "$SCRIPT_DIR/dev-worktree-env.sh")
 
-    # Apply pending migrations from this branch
+    # Apply pending migrations from this branch.
+    # The new worktree's config.toml may define different Supabase ports than
+    # the shared running instance (started from a different worktree).
+    # Temporarily patch the db port so `supabase migration up --local` connects
+    # to the running instance, then restore the original config.
+    RUNNING_DB_PORT="$(cd "$CURRENT_WORKTREE" && supabase status --output json 2>/dev/null \
+      | sed -n '/^{/,/^}/p' | jq -r '.DB_URL' | sed -n 's/.*:\([0-9]*\)\/.*/\1/p')"
+    if [ -n "$RUNNING_DB_PORT" ]; then
+      WORKTREE_CONFIG="$NEW_WORKTREE_DIR/supabase/config.toml"
+      WORKTREE_DB_PORT="$(sed -n '/^\[db\]/,/^\[/{s/^port = \([0-9]*\)/\1/p;}' "$WORKTREE_CONFIG")"
+      if [ "$WORKTREE_DB_PORT" != "$RUNNING_DB_PORT" ]; then
+        echo "Patching db port $WORKTREE_DB_PORT → $RUNNING_DB_PORT for shared Supabase instance..."
+        sed -i '' "/^\[db\]/,/^\[/s/^port = ${WORKTREE_DB_PORT}/port = ${RUNNING_DB_PORT}/" "$WORKTREE_CONFIG"
+        RESTORE_DB_PORT=true
+      fi
+    fi
     echo "Applying Supabase migrations..."
-    (cd "$NEW_WORKTREE_DIR" && supabase migration up)
+    (cd "$NEW_WORKTREE_DIR" && supabase migration up --local)
+    if [ "${RESTORE_DB_PORT:-}" = true ]; then
+      (cd "$NEW_WORKTREE_DIR" && git checkout -- supabase/config.toml)
+    fi
   fi
 fi
 
