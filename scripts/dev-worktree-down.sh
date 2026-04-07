@@ -50,6 +50,12 @@ echo "Stopping Docker containers for $PROJECT_NAME..."
 cd "$TARGET_DIR"
 docker compose down --rmi local --volumes --remove-orphans 2>/dev/null || true
 
+# --- Prune dangling images and build cache left by this project ---
+echo "Pruning dangling images..."
+docker image prune -f 2>/dev/null || true
+echo "Pruning build cache..."
+docker builder prune -f 2>/dev/null || true
+
 # --- Supabase note ---
 if [ -f "$TARGET_DIR/supabase/config.toml" ]; then
   echo "Note: Shared Supabase instance left running (used by other worktrees)."
