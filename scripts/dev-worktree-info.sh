@@ -33,9 +33,9 @@ if [ -f "$REGISTRY" ]; then
 fi
 
 # --- Docker container status ---
-CONTAINER_STATUS="not found"
-if docker inspect --format '{{.State.Status}}' "$PROJECT_NAME" 2>/dev/null | read -r STATUS; then
-  CONTAINER_STATUS="$STATUS"
+CONTAINER_STATUS=$(docker inspect --format '{{.State.Status}}' "$PROJECT_NAME" 2>/dev/null || true)
+if [ -z "$CONTAINER_STATUS" ]; then
+  CONTAINER_STATUS="not found"
 fi
 
 # --- Docker image ---
