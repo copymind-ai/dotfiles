@@ -14,6 +14,8 @@ upsert_env() {
   if grep -q "^${key}=" "$file" 2>/dev/null; then
     sed -i '' "s|^${key}=.*|${key}=${val}|" "$file"
   else
+    # Ensure file ends with a newline before appending to avoid concatenation
+    [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ] && echo "" >>"$file"
     echo "${key}=${val}" >>"$file"
   fi
 }
