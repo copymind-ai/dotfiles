@@ -15,6 +15,7 @@ if [ -z "${1:-}" ]; then
 fi
 
 BRANCH_NAME="$1"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Bare repo check ---
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
@@ -56,8 +57,10 @@ docker image prune -f 2>/dev/null || true
 echo "Pruning build cache..."
 docker builder prune -f 2>/dev/null || true
 
-# --- Supabase note ---
+# --- Clean up migration hub symlinks ---
 if [ -f "$TARGET_DIR/supabase/config.toml" ]; then
+  echo "Cleaning up migration hub symlinks..."
+  "$SCRIPT_DIR/dev-worktree-migrate.sh" unlink "$TARGET_DIR" || true
   echo "Note: Shared Supabase instance left running (used by other worktrees)."
   echo "  To stop: dev supabase down"
 fi

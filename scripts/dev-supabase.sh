@@ -88,7 +88,7 @@ cmd_migrate() {
   require_supabase_project
 
   if ! supabase_is_running; then
-    echo "Error: Supabase is not running. Start it first: dev supabase up" >&2
+    echo "Error: Supabase is not running. Start it first: dev wt sb" >&2
     exit 1
   fi
 
@@ -96,8 +96,8 @@ cmd_migrate() {
     echo "Resetting database (applying all migrations from scratch)..."
     supabase db reset
   else
-    echo "Applying pending migrations..."
-    supabase migration up
+    echo "Applying pending migrations via migration hub..."
+    "$SCRIPT_DIR/dev-worktree-migrate.sh" apply
   fi
 }
 

@@ -107,55 +107,24 @@ if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
   if ! command -v supabase &>/dev/null; then
     echo "Warning: supabase CLI not found. Skipping Supabase setup." >&2
   else
-    echo "Detected Supabase project..."
-    SUPABASE_READY=false
-    if supabase status --output json >/dev/null 2>&1; then
-      echo "Supabase already running (shared instance)."
-      SUPABASE_READY=true
+    if ! supabase status --output json >/dev/null 2>&1; then
+      echo "Error: Supabase is not running. Set it up first: dev wt sb" >&2
+      exit 1
+    fi
+
+    # Inject Supabase env vars into .env.local
+    (cd "$NEW_WORKTREE_DIR" && "$SCRIPT_DIR/dev-worktree-env.sh")
+
+    # Refresh supabase wt to latest origin/main and apply new base migrations
+    echo "Refreshing migration hub..."
+    SUPABASE_WT=$("$SCRIPT_DIR/dev-worktree-migrate.sh" find-supabase-wt)
+    (cd "$SUPABASE_WT" && git fetch origin && git checkout -f origin/main) 2>&1 | grep -v "^HEAD is now at" || true
+    if [ -x "$SUPABASE_WT/scripts/db-migrate-local.sh" ]; then
+      (cd "$SUPABASE_WT" && ./scripts/db-migrate-local.sh)
     else
-      echo "Starting shared Supabase instance..."
-      echo "(First run pulls ~10 Docker images and may take a few minutes)"
-      if (cd "$NEW_WORKTREE_DIR" && supabase start); then
-        SUPABASE_READY=true
-      else
-        echo "Warning: supabase start failed (ports may be in use by another project)." >&2
-        echo "  Check running containers: docker ps --filter name=supabase" >&2
-        echo "  Skipping Supabase env injection and migrations." >&2
-      fi
+      (cd "$SUPABASE_WT" && supabase migration up --local)
     fi
-
-    if [ "$SUPABASE_READY" = true ]; then
-      # Inject Supabase env vars into .env.local.
-      # Pass SUPABASE_STATUS_DIR so env.sh reads status from the worktree
-      # that started Supabase (which may have different ports in config.toml).
-      (cd "$NEW_WORKTREE_DIR" && SUPABASE_STATUS_DIR="$CURRENT_WORKTREE" "$SCRIPT_DIR/dev-worktree-env.sh")
-
-      # Apply pending migrations from this branch.
-      # The new worktree's config.toml may define different Supabase ports than
-      # the shared running instance (started from a different worktree).
-      # Temporarily patch the db port so `supabase migration up --local` connects
-      # to the running instance, then restore the original config.
-      RUNNING_DB_PORT="$(cd "$CURRENT_WORKTREE" && supabase status --output json 2>/dev/null \
-        | sed -n '/^{/,/^}/p' | jq -r '.DB_URL' | sed -n 's/.*:\([0-9]*\)\/.*/\1/p')"
-      if [ -n "$RUNNING_DB_PORT" ]; then
-        WORKTREE_CONFIG="$NEW_WORKTREE_DIR/supabase/config.toml"
-        WORKTREE_DB_PORT="$(sed -n '/^\[db\]/,/^\[/{s/^port = \([0-9]*\)/\1/p;}' "$WORKTREE_CONFIG")"
-        if [ "$WORKTREE_DB_PORT" != "$RUNNING_DB_PORT" ]; then
-          echo "Patching db port $WORKTREE_DB_PORT → $RUNNING_DB_PORT for shared Supabase instance..."
-          sed -i '' "/^\[db\]/,/^\[/s/^port = ${WORKTREE_DB_PORT}/port = ${RUNNING_DB_PORT}/" "$WORKTREE_CONFIG"
-          RESTORE_DB_PORT=true
-        fi
-      fi
-      echo "Applying Supabase migrations..."
-      if [ -x "$NEW_WORKTREE_DIR/scripts/db-migrate-local.sh" ]; then
-        (cd "$NEW_WORKTREE_DIR" && ./scripts/db-migrate-local.sh)
-      else
-        (cd "$NEW_WORKTREE_DIR" && supabase migration up --local)
-      fi
-      if [ "${RESTORE_DB_PORT:-}" = true ]; then
-        (cd "$NEW_WORKTREE_DIR" && git checkout -- supabase/config.toml)
-      fi
-    fi
+    echo "Migration hub refreshed to origin/main"
   fi
 fi
 
