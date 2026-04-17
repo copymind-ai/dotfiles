@@ -24,8 +24,11 @@ if ! git -C "$GIT_COMMON_DIR" rev-parse --is-bare-repository 2>/dev/null | grep 
   exit 1
 fi
 
-# --- Resolve paths from current worktree ---
-CURRENT_WORKTREE="$(git rev-parse --show-toplevel)"
+# --- Must be run from inside an existing worktree ---
+if ! CURRENT_WORKTREE="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "Error: No worktree found. Run 'dev wt init' first to bootstrap the repo." >&2
+  exit 1
+fi
 PARENT_DIR="$(cd "$CURRENT_WORKTREE/.." && pwd)"
 REPO_NAME="$(basename "$PARENT_DIR" | sed 's/\.git$//')"
 CURRENT_WORKTREE_NAME="$(basename "$CURRENT_WORKTREE")"
@@ -51,11 +54,10 @@ if [ -z "${BASE_PORT:-}" ]; then
   exit 1
 fi
 
-# --- Initialize registry if missing ---
+# --- Registry must exist (created by 'dev wt init') ---
 if [ ! -f "$REGISTRY" ]; then
-  printf "# worktree\tport\tcreated\n" >"$REGISTRY"
-  printf "%s\t%s\t%s\n" "$CURRENT_WORKTREE_NAME" "$BASE_PORT" "$(date +%Y-%m-%d)" >>"$REGISTRY"
-  echo "Initialized port registry at $REGISTRY (base port $BASE_PORT)"
+  echo "Error: Port registry not found at $REGISTRY. Run 'dev wt init' first." >&2
+  exit 1
 fi
 
 # --- Check branch not already registered ---
@@ -74,11 +76,6 @@ fi
 echo "Allocated port $NEW_PORT for $SAFE_NAME"
 
 # --- Fetch latest and create worktree ---
-# Bare clones don't configure a fetch refspec, so origin/* refs never get created.
-# Fix that before fetching so origin/main resolves properly.
-if ! git config --get remote.origin.fetch &>/dev/null; then
-  git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-fi
 echo "Fetching origin..."
 git fetch origin
 
