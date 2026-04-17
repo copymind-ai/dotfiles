@@ -8,6 +8,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-}" in
+  init)
+    shift
+    exec "$SCRIPT_DIR/dev-worktree-init.sh" "$@"
+    ;;
   up)
     shift
     exec "$SCRIPT_DIR/dev-worktree-up.sh" "$@"
@@ -28,6 +32,7 @@ case "${1:-}" in
     echo "Usage: dev wt <command> [args]" >&2
     echo "" >&2
     echo "Commands:" >&2
+    echo "  init           Bootstrap first worktree from a bare clone" >&2
     echo "  up <branch>    Create a git worktree with Docker isolation" >&2
     echo "  down <branch>  Tear down a git worktree and free the port" >&2
     echo "  env            Set up .env.local for current worktree" >&2

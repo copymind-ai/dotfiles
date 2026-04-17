@@ -103,7 +103,7 @@ export STATS_FILE
 INIT_DIR="$TEST_DIR/_init"
 mkdir -p "$INIT_DIR"
 cd "$INIT_DIR"
-git init -q
+git init -q -b main
 git config user.email "test@test.com"
 git config user.name "Test"
 
@@ -196,15 +196,8 @@ cd repo.git
 git config user.email "test@test.com"
 git config user.name "Test"
 git remote set-url origin "$TEST_DIR/repo.git"
-git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-git fetch -q origin 2>/dev/null || true
 
-git worktree add -q "$TEST_DIR/main" main 2>/dev/null || git worktree add -q "$TEST_DIR/main" -b main HEAD
-
-# Stop any leftover Supabase containers from previous run
-(cd "$TEST_DIR/main" && supabase stop --no-backup 2>/dev/null) || true
-
-printf "  ${GREEN}✓${RESET} test repo ready (Supabase not started — tests control lifecycle)\n"
+printf "  ${GREEN}✓${RESET} bare repo ready (integration/00 bootstraps via \`dev wt init\`)\n"
 
 # ── Run tests ────────────────────────────────────────────────────────
 
