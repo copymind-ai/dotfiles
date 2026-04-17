@@ -81,7 +81,7 @@ for cmd in git supabase docker jq; do
   printf "  ${GREEN}✓${RESET} %s\n" "$cmd"
 done
 
-for script in dev.sh dev-worktree.sh dev-supabase.sh dev-worktree-up.sh dev-worktree-down.sh dev-worktree-info.sh dev-worktree-env.sh dev-worktree-supabase.sh dev-worktree-migrate.sh dev-session.sh; do
+for script in dev.sh dev-worktree.sh dev-supabase.sh dev-worktree-up.sh dev-worktree-down.sh dev-worktree-info.sh dev-worktree-env.sh dev-worktree-migrate.sh dev-session.sh; do
   [ -x "$SCRIPTS_DIR/$script" ] || { echo "Error: $SCRIPTS_DIR/$script not found or not executable."; exit 1; }
 done
 printf "  ${GREEN}✓${RESET} all scripts found\n"

@@ -25,7 +25,7 @@ find_supabase_wt() {
   local wt_path=""
   wt_path=$(git worktree list --porcelain | awk '/^worktree .*\/supabase$/ { print substr($0, 10) }')
   if [ -z "$wt_path" ]; then
-    echo "Error: Supabase worktree not found. Run: dev wt sb" >&2
+    echo "Error: Supabase worktree not found. Run: dev sb up" >&2
     return 1
   fi
   echo "$wt_path"
@@ -256,6 +256,30 @@ clean_stale_symlinks() {
   fi
 }
 
+clean_all_stale_symlinks() {
+  # Remove all broken symlinks from the hub (targets deleted, renamed, or worktree removed).
+  local supabase_wt="$1"
+
+  local count=0
+  local f
+  for dir in "$supabase_wt/supabase/migrations/app" "$supabase_wt/supabase/migrations/jobs"; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*.sql; do
+      [ -L "$f" ] || continue
+      if [ ! -f "$(realpath "$f" 2>/dev/null || readlink "$f")" ]; then
+        rm "$f"
+        count=$((count + 1))
+      fi
+    done
+  done
+
+  if [ "$count" -gt 0 ]; then
+    echo "Removed $count stale symlink(s) from the migration hub"
+  else
+    echo "No stale symlinks found"
+  fi
+}
+
 apply_migrations() {
   local supabase_wt="$1"
   echo "Applying migrations from supabase worktree..."
@@ -416,17 +440,25 @@ case "${1:-}" in
   apply)
     cmd_apply
     ;;
+  clean-all)
+    if [ -z "${2:-}" ]; then
+      echo "Usage: dev-worktree-migrate.sh clean-all <supabase-wt-path>" >&2
+      exit 1
+    fi
+    clean_all_stale_symlinks "$2"
+    ;;
   find-supabase-wt)
     cmd_find_supabase_wt
     ;;
   *)
-    echo "Usage: dev-worktree-migrate.sh <link|unlink|apply|find-supabase-wt> [args]" >&2
+    echo "Usage: dev-worktree-migrate.sh <link|unlink|apply|clean-all|find-supabase-wt> [args]" >&2
     echo "" >&2
     echo "Subcommands:" >&2
-    echo "  link <wt_path>    Symlink a worktree's new migrations and apply" >&2
-    echo "  unlink <wt_path>  Remove a worktree's symlinks and refresh" >&2
-    echo "  apply             Re-link current worktree's migrations and apply" >&2
-    echo "  find-supabase-wt  Print the supabase worktree path" >&2
+    echo "  link <wt_path>       Symlink a worktree's new migrations and apply" >&2
+    echo "  unlink <wt_path>     Remove a worktree's symlinks and refresh" >&2
+    echo "  apply                Re-link current worktree's migrations and apply" >&2
+    echo "  clean-all <sb_wt>    Remove all stale symlinks from the hub" >&2
+    echo "  find-supabase-wt     Print the supabase worktree path" >&2
     exit 1
     ;;
 esac

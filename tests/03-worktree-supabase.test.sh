@@ -3,13 +3,13 @@ set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
 echo ""
-printf "${BOLD}03 — dev wt sb (Supabase worktree setup)${RESET}\n"
+printf "${BOLD}03 — dev sb up (Supabase worktree setup)${RESET}\n"
 
 # ── First run — creates supabase worktree ────────────────────────────
 
 header "creates supabase worktree"
 cd "$TEST_DIR/main"
-OUTPUT=$("$SCRIPTS_DIR/dev-worktree-supabase.sh" 2>&1) || true
+OUTPUT=$("$SCRIPTS_DIR/dev-supabase.sh" up 2>&1) || true
 
 assert_contains "prints hub ready" "Supabase hub ready" "$OUTPUT"
 assert_file_exists "supabase worktree created" "$TEST_DIR/supabase"
@@ -24,7 +24,7 @@ assert_eq "detached at origin/main" "$ORIGIN_MAIN" "$SUPABASE_HEAD"
 # ── Idempotent re-run ────────────────────────────────────────────────
 
 header "idempotent re-run"
-OUTPUT=$("$SCRIPTS_DIR/dev-worktree-supabase.sh" 2>&1) || true
+OUTPUT=$("$SCRIPTS_DIR/dev-supabase.sh" up 2>&1) || true
 
 assert_contains "updates existing worktree" "Updating supabase worktree" "$OUTPUT"
 assert_contains "supabase already running" "already running" "$OUTPUT"

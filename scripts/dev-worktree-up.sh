@@ -108,7 +108,7 @@ if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
     echo "Warning: supabase CLI not found. Skipping Supabase setup." >&2
   else
     if ! supabase status --output json >/dev/null 2>&1; then
-      echo "Error: Supabase is not running. Set it up first: dev wt sb" >&2
+      echo "Error: Supabase is not running. Set it up first: dev sb up" >&2
       exit 1
     fi
 
