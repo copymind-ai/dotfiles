@@ -102,32 +102,6 @@ else
   echo "Warning: No .env.local found in $CURRENT_WORKTREE_NAME worktree" >&2
 fi
 
-# --- Supabase integration ---
-if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
-  if ! command -v supabase &>/dev/null; then
-    echo "Warning: supabase CLI not found. Skipping Supabase setup." >&2
-  else
-    if ! supabase status --output json >/dev/null 2>&1; then
-      echo "Error: Supabase is not running. Set it up first: dev sb up" >&2
-      exit 1
-    fi
-
-    # Inject Supabase env vars into .env.local
-    (cd "$NEW_WORKTREE_DIR" && "$SCRIPT_DIR/dev-worktree-env.sh")
-
-    # Refresh supabase wt to latest origin/main and apply new base migrations
-    echo "Refreshing migration hub..."
-    SUPABASE_WT=$("$SCRIPT_DIR/dev-worktree-migrate.sh" find-supabase-wt)
-    (cd "$SUPABASE_WT" && git fetch origin && git checkout -f origin/main) 2>&1 | grep -v "^HEAD is now at" || true
-    if [ -x "$SUPABASE_WT/scripts/db-migrate-local.sh" ]; then
-      (cd "$SUPABASE_WT" && ./scripts/db-migrate-local.sh)
-    else
-      (cd "$SUPABASE_WT" && supabase migration up --local)
-    fi
-    echo "Migration hub refreshed to origin/main"
-  fi
-fi
-
 # --- Generate .env for Docker Compose project name ---
 echo "COMPOSE_PROJECT_NAME=${REPO_NAME}-${SAFE_NAME}" >"$NEW_WORKTREE_DIR/.env"
 echo "Generated .env with COMPOSE_PROJECT_NAME"
@@ -163,6 +137,11 @@ fi
 echo "Building Docker image..."
 docker compose build
 
+HAS_SUPABASE=false
+if [ -f "$NEW_WORKTREE_DIR/supabase/config.toml" ]; then
+  HAS_SUPABASE=true
+fi
+
 echo ""
 echo "=== Setup complete ==="
 echo "  Worktree:  $NEW_WORKTREE_DIR"
@@ -172,4 +151,8 @@ echo "  Container: ${REPO_NAME}-${SAFE_NAME}"
 echo ""
 echo "To get started:"
 echo "  cd $NEW_WORKTREE_DIR"
+if [ "$HAS_SUPABASE" = true ]; then
+  echo "  dev sb up              # start Supabase (if not running)"
+  echo "  dev wt env             # pick up Supabase keys into .env.local"
+fi
 echo "  docker compose up"

@@ -56,14 +56,10 @@ assert_contains "override has port 13001" "13001:3000" "$OVERRIDE"
 # .env.local copied/created
 assert_file_exists ".env.local exists" "$TEST_DIR/feat-alpha/.env.local"
 
-# ── Supabase integration ─────────────────────────────────────────────
+# ── Supabase hint ─────────────────────────────────────────────────────
 
-header "supabase integration during wt up"
-assert_contains "refreshes migration hub" "Refreshing migration hub" "$OUTPUT"
-assert_contains "hub refreshed" "Migration hub refreshed" "$OUTPUT"
-
-# Supabase env vars should have been injected
-ENV_LOCAL=$(cat "$TEST_DIR/feat-alpha/.env.local")
-assert_contains "SUPABASE_URL injected" "NEXT_PUBLIC_SUPABASE_URL" "$ENV_LOCAL"
+header "supabase hints in output"
+assert_contains "hints dev sb up" "dev sb up" "$OUTPUT"
+assert_contains "hints dev wt env" "dev wt env" "$OUTPUT"
 
 print_results
