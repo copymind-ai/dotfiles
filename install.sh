@@ -3,6 +3,9 @@ set -euo pipefail
 
 DOTFILES="$(cd "$(dirname "$0")" && pwd)"
 
+# Work from a world-readable dir so Homebrew's sandbox can stat the CWD.
+cd /tmp
+
 info() { printf '\033[1;34m[info]\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$1"; }
 ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$1"; }
@@ -33,7 +36,7 @@ fi
 for pkg in tmux neovim ripgrep jq; do
   if ! command -v "$pkg" &>/dev/null; then
     info "Installing $pkg..."
-    (cd /tmp && brew install "$pkg")
+    brew install "$pkg"
   else
     ok "$pkg already installed"
   fi
