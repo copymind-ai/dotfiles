@@ -197,13 +197,7 @@ git config user.email "test@test.com"
 git config user.name "Test"
 git remote set-url origin "$TEST_DIR/repo.git"
 
-# Bootstrap first worktree + port registry via `dev wt init`
-"$SCRIPTS_DIR/dev-worktree-init.sh" >/dev/null
-
-# Stop any leftover Supabase containers from previous run
-(cd "$TEST_DIR/main" && supabase stop --no-backup 2>/dev/null) || true
-
-printf "  ${GREEN}✓${RESET} test repo ready (Supabase not started — tests control lifecycle)\n"
+printf "  ${GREEN}✓${RESET} bare repo ready (integration/00 bootstraps via \`dev wt init\`)\n"
 
 # ── Run tests ────────────────────────────────────────────────────────
 
