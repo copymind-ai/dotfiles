@@ -20,6 +20,12 @@ assert_contains "registry has base port" "13000" "$REGISTRY_CONTENT"
 
 assert_contains "prints next steps" "dev wt up" "$OUTPUT"
 
+header "rejects re-init when worktree already exists"
+cd "$TEST_DIR/repo.git"
+OUTPUT=$("$SCRIPTS_DIR/dev-worktree-init.sh" 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "mentions already exists" "already" "$OUTPUT"
+
 # Stop any leftover Supabase containers from previous test runs
 (cd "$TEST_DIR/main" && supabase stop --no-backup 2>/dev/null) || true
 
