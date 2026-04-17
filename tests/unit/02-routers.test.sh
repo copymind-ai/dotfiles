@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname "$0")/helpers.sh"
+source "$(dirname "$0")/../helpers.sh"
 
 echo ""
 printf "${BOLD}02 — Router dispatch${RESET}\n"
