@@ -21,15 +21,28 @@ dotfiles/
 ├── ghostty/.config/ghostty/
 ├── neovim/.config/nvim/
 ├── scripts/
-│   ├── dev.sh
-│   ├── dev-session.sh
-│   ├── dev-supabase.sh
-│   ├── dev-worktree.sh
+│   ├── dev.sh                    # Entry point
+│   ├── dev-session.sh            # Tmux sessions
+│   ├── dev-worktree.sh           # Worktree dispatcher
 │   ├── dev-worktree-up.sh
 │   ├── dev-worktree-down.sh
-│   └── dev-worktree-env.sh
+│   ├── dev-worktree-env.sh
+│   ├── dev-worktree-info.sh
+│   ├── dev-supabase.sh           # Supabase dispatcher
+│   ├── dev-supabase-helpers.sh   # Shared functions
+│   ├── dev-supabase-up.sh
+│   ├── dev-supabase-down.sh
+│   ├── dev-supabase-status.sh
+│   ├── dev-supabase-link.sh
+│   ├── dev-supabase-unlink.sh
+│   └── dev-supabase-sync.sh
+├── tests/
+│   ├── unit/                     # Pure function tests
+│   ├── integration/              # Single-command tests
+│   └── e2e/                      # Multi-command workflows
 ├── tmux/.tmux.conf
 ├── zsh/.zshrc
+├── test.sh                       # Test runner shortcut
 └── install.sh
 ```
 
@@ -53,10 +66,12 @@ Unified entry point for development tools.
 
 | Command | Description |
 |---------|-------------|
-| `dev sb up` | Start shared Supabase instance |
+| `dev sb up` | Create supabase worktree and start Supabase |
 | `dev sb down [--force]` | Stop shared Supabase instance |
 | `dev sb status` | Show Supabase status |
-| `dev sb migrate [--reset]` | Apply pending migrations (or reset all) |
+| `dev sb link` | Symlink current worktree's migrations and apply |
+| `dev sb unlink` | Remove current worktree's migration symlinks |
+| `dev sb sync [--reset]` | Fetch origin/main, update supabase worktree, clean stale symlinks |
 
 ### `dev wt` — Worktree
 
@@ -68,6 +83,18 @@ Must be run from inside a bare-cloned repo. Repo name and paths are detected aut
 | `dev wt down <branch>` | Tear down a git worktree and free the port |
 | `dev wt env` | Set up .env.local for current worktree |
 | `dev wt info` | Show info about the current worktree |
+
+## Testing
+
+```bash
+./test.sh                    # all tests
+./test.sh --unit             # unit only (no Docker/Supabase needed)
+./test.sh --integration      # integration only
+./test.sh --e2e              # e2e only
+./test.sh link               # pattern filter
+```
+
+Requires: `git`, `supabase` CLI, `docker`, `jq`.
 
 ## Installation
 
