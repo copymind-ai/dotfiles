@@ -33,7 +33,7 @@ else
 fi
 
 # --- Packages ---
-for pkg in tmux neovim ripgrep jq; do
+for pkg in tmux neovim ripgrep jq node; do
   if ! command -v "$pkg" &>/dev/null; then
     info "Installing $pkg..."
     brew install "$pkg"
@@ -48,6 +48,14 @@ if ! command -v supabase &>/dev/null; then
   brew install supabase/tap/supabase
 else
   ok "Supabase CLI already installed"
+fi
+
+# --- pgflow (required by `dev sb flow`) ---
+if ! command -v pgflow &>/dev/null; then
+  info "Installing pgflow globally..."
+  npm install -g pgflow
+else
+  ok "pgflow already installed"
 fi
 
 # --- Oh My Zsh ---

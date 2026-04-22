@@ -13,6 +13,9 @@ Team configuration files for local development.
 | [Homebrew](https://brew.sh/)                                 | macOS package manager, installs everything above        |
 | [ripgrep](https://github.com/BurntSushi/ripgrep)             | Fast recursive code search, used by Neovim's Telescope  |
 | [TPM](https://github.com/tmux-plugins/tpm)                   | Tmux Plugin Manager, auto-installs tmux plugins         |
+| [Supabase CLI](https://supabase.com/docs/guides/cli)         | Local Supabase stack, required by `dev sb`              |
+| [Node.js](https://nodejs.org/)                               | Runtime for `pgflow`                                    |
+| [pgflow](https://pgflow.dev/)                                | Flow compiler, required by `dev sb flow`                |
 
 ## Structure
 
@@ -104,7 +107,7 @@ Must be run from inside a bare-cloned repo. Repo name and paths are detected aut
 ./test.sh link               # pattern filter
 ```
 
-Requires: `git`, `supabase` CLI, `docker`, `jq`, `psql`, `rsync`, `curl`, and `pgflow` (install via `npm install -g pgflow` — needed for the flow-lifecycle e2e test).
+Requires everything `install.sh` sets up (`supabase`, `jq`, `pgflow`, `node`, …) plus `psql`, `rsync`, `curl`, `docker`. Run `./install.sh` before the first test run.
 
 ## Installation
 

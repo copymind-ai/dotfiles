@@ -95,9 +95,10 @@ for cmd in git supabase docker jq psql rsync curl; do
   command -v "$cmd" >/dev/null || { echo "Error: $cmd is required but not found."; exit 1; }
   printf "  ${GREEN}✓${RESET} %s\n" "$cmd"
 done
-# pgflow: required for e2e test 04-db-flow-reanchor. Install: npm install -g pgflow
+# pgflow: required for e2e test 04-db-flow-lifecycle. Install via ./install.sh
+# (which handles node + `npm install -g pgflow`).
 if ! command -v pgflow >/dev/null && ! npx -y pgflow --version >/dev/null 2>&1; then
-  echo "Error: pgflow is required but not found. Install via: npm install -g pgflow"
+  echo "Error: pgflow is required but not found. Run ./install.sh from the repo root."
   exit 1
 fi
 printf "  ${GREEN}✓${RESET} pgflow\n"

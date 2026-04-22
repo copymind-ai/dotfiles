@@ -4,8 +4,8 @@ Three-layer test suite against a real bare repo + Supabase container.
 
 ## Prerequisites
 
-- `git`, `supabase` CLI, `docker`, `jq`, `psql`, `rsync`, `curl`
-- `pgflow` — install via `npm install -g pgflow` (required for the flow e2e test)
+- Run `./install.sh` from the repo root to install `supabase`, `jq`, `pgflow`, `node`, etc.
+- Plus `psql`, `rsync`, `curl`, `docker`
 - Docker daemon running
 
 ## Running
