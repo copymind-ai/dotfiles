@@ -224,6 +224,8 @@ for SLUG in ${TODO_SLUGS[@]+"${TODO_SLUGS[@]}"}; do
     echo "    Added [functions.${WORKER_NAME}] to config.toml"
   fi
 
+  scaffold_pgflow_worker "$INVOKING_WT" "$SUPABASE_WT" "$SLUG"
+
   if ! grep -rq "track_worker_function('${WORKER_NAME}')" "$JOBS_DIR"; then
     TIMESTAMP=$(date -u -v+1S +"%Y%m%d%H%M%S" 2>/dev/null || date -u -d "+1 second" +"%Y%m%d%H%M%S")
     REG_FILE="${JOBS_DIR}/${TIMESTAMP}_register_${SNAKE_SLUG}_worker.sql"

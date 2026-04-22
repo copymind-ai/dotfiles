@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "@pgflow/edge-worker": "jsr:@pgflow/edge-worker@__PGFLOW_VERSION__",
+    "@pgflow/edge-worker/": "jsr:@pgflow/edge-worker@__PGFLOW_VERSION__/",
+    "@pgflow/dsl": "npm:@pgflow/dsl@__PGFLOW_VERSION__",
+    "@pgflow/dsl/": "npm:@pgflow/dsl@__PGFLOW_VERSION__/"
+  }
+}
