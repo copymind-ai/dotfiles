@@ -425,6 +425,71 @@ wait_for_control_plane() {
   done
 }
 
+# --- Retry with progressive backoff -----------------------------------
+#
+# Generic retry wrapper for flaky Supabase/Docker operations. Backoff
+# grows linearly: 15s, 20s, 25s, 30s ... (10 + attempt * 5).
+#
+# Usage:
+#   retry_with_backoff <max_attempts> <label> <command> [args...]
+#
+# The command is invoked via "$@" — pass a function name (or an external
+# command). Inside an `if`, errexit is suspended, so a non-zero return
+# from the command is captured rather than terminating the caller.
+retry_with_backoff() {
+  local max_attempts="$1"; shift
+  local label="$1"; shift
+  local attempts=0
+  while true; do
+    attempts=$((attempts + 1))
+    if "$@"; then
+      return 0
+    fi
+    if [ "$attempts" -ge "$max_attempts" ]; then
+      echo "Error: $label failed after $max_attempts attempts" >&2
+      return 1
+    fi
+    local backoff=$((10 + attempts * 5))
+    echo "  (attempt $attempts/$max_attempts failed — retrying in ${backoff}s)"
+    sleep "$backoff"
+  done
+}
+
+# Run `supabase db reset --local` inside the supabase worktree, retrying
+# with progressive backoff. `supabase db reset --local` restarts
+# containers to clear PostgREST/edge-runtime caches; Kong can return a
+# transient 502 if it health-checks an upstream before it's fully back
+# up, so we retry up to 5 times.
+#
+# All scripts that need to reset the local DB MUST use this helper
+# rather than calling `supabase db reset` directly.
+#
+# Usage: supabase_db_reset_with_retry <supabase_wt>
+supabase_db_reset_with_retry() {
+  local supabase_wt="$1"
+  _supabase_db_reset_once() {
+    (cd "$supabase_wt" && supabase db reset --local)
+  }
+  retry_with_backoff 5 "supabase db reset --local" _supabase_db_reset_once
+}
+
+# Restart the Supabase stack (`supabase stop && supabase start`) and
+# wait for the pgflow ControlPlane edge function to respond. Each
+# attempt gives ControlPlane up to 30s (wait_for_control_plane) to come
+# up; up to 3 attempts with progressive backoff to absorb slow Docker
+# warm-up on macOS.
+#
+# Usage: supabase_stack_restart_ready <supabase_wt> <api_port>
+supabase_stack_restart_ready() {
+  local supabase_wt="$1"
+  local api_port="$2"
+  _supabase_stack_restart_ready_once() {
+    (cd "$supabase_wt" && supabase stop >/dev/null 2>&1 && supabase start >/dev/null 2>&1) || return 1
+    wait_for_control_plane "$api_port"
+  }
+  retry_with_backoff 3 "supabase stack restart" _supabase_stack_restart_ready_once
+}
+
 # --- Migration application wrapper ---
 
 apply_migrations() {

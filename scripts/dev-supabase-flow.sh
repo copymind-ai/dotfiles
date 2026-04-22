@@ -124,8 +124,7 @@ fi
 echo "==> Restarting supabase stack from shared worktree (picks up new + changed flow files)"
 API_PORT="$(awk '/^\[api\]/{f=1;next}/^\[/{f=0}f&&/^port[[:space:]]*=/{gsub(/[^0-9]/,"");print;exit}' "$SUPABASE_WT/supabase/config.toml")"
 [ -z "$API_PORT" ] && API_PORT=54321
-(cd "$SUPABASE_WT" && supabase stop >/dev/null 2>&1 && supabase start >/dev/null 2>&1) || true
-wait_for_control_plane "$API_PORT"
+supabase_stack_restart_ready "$SUPABASE_WT" "$API_PORT"
 
 # ── Pre-pass: validate each slug, decide what needs recompile ────────
 TODO_SLUGS=()

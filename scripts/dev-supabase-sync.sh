@@ -23,7 +23,7 @@ fi
 
 if [ "${1:-}" = "--reset" ]; then
   echo "Resetting database (applying all migrations from scratch)..."
-  (cd "$supabase_wt" && supabase db reset)
+  supabase_db_reset_with_retry "$supabase_wt"
   exit 0
 fi
 
