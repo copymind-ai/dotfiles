@@ -27,9 +27,11 @@ dotfiles/
 │   ├── dev.sh                    # Entry point
 │   ├── dev-session.sh            # Tmux sessions
 │   ├── dev-worktree.sh           # Worktree dispatcher
+│   ├── dev-worktree-init.sh
 │   ├── dev-worktree-up.sh
 │   ├── dev-worktree-down.sh
 │   ├── dev-worktree-env.sh
+│   ├── dev-worktree-port.sh
 │   ├── dev-worktree-info.sh
 │   ├── dev-supabase.sh           # Supabase dispatcher
 │   ├── dev-supabase-helpers.sh   # Shared functions
@@ -42,7 +44,8 @@ dotfiles/
 │   ├── dev-supabase-migrate.sh
 │   ├── dev-supabase-seed.sh
 │   ├── dev-supabase-reset.sh
-│   └── dev-supabase-flow.sh
+│   ├── dev-supabase-flow.sh
+│   └── templates/                # File templates used by scripts above
 ├── tests/
 │   ├── unit/                     # Pure function tests
 │   ├── integration/              # Single-command tests
@@ -90,12 +93,14 @@ All commands operate on the shared supabase worktree regardless of which worktre
 
 Must be run from inside a bare-cloned repo. Repo name and paths are detected automatically.
 
-| Command                | Description                                 |
-| ---------------------- | ------------------------------------------- |
-| `dev wt up <branch>`   | Create a git worktree with Docker isolation |
-| `dev wt down <branch>` | Tear down a git worktree and free the port  |
-| `dev wt env`           | Set up .env.local for current worktree      |
-| `dev wt info`          | Show info about the current worktree        |
+| Command                | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `dev wt init`          | Bootstrap first worktree + port registry from a fresh bare clone   |
+| `dev wt up <branch>`   | Create a git worktree with Docker isolation                        |
+| `dev wt down <branch>` | Tear down a git worktree and free the port                         |
+| `dev wt env`           | Set up .env.local for current worktree                             |
+| `dev wt port`          | Write docker-compose.override.yml from the port registry           |
+| `dev wt info`          | Show info about the current worktree                               |
 
 ## Testing
 
