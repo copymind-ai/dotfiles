@@ -124,8 +124,15 @@ on_flow_exit() {
     if [ -f "$SHARED_FLOWS_BACKUP/job-key.ts" ]; then
       mv "$SHARED_FLOWS_BACKUP/job-key.ts" "$SHARED_JOB_KEY"
     fi
-    echo "==> Restarting supabase stack to re-read restored flows" >&2
-    (cd "$SUPABASE_WT" && supabase stop >/dev/null 2>&1 && supabase start >/dev/null 2>&1) || true
+    # Intentionally NOT restarting the supabase stack here. With the
+    # destructive work-pass steps moved to run only after compile
+    # succeeds, a failure means the invoking worktree + DB are untouched
+    # and only the shared worktree's bind-mounted files were transiently
+    # changed. The edge runtime picks up the restored files on its next
+    # request — a stop/start here just kills `supabase functions serve`
+    # without restarting it and leaves the stack worse than pre-run.
+    echo "  (shared worktree files restored — no supabase restart;" >&2
+    echo "   edge runtime will re-read them on its next request)" >&2
   fi
   rm -rf "$SHARED_FLOWS_BACKUP"
 }
@@ -190,7 +197,40 @@ for SLUG in ${TODO_SLUGS[@]+"${TODO_SLUGS[@]}"}; do
   echo "==> Recompiling flow: $SLUG"
   COMPILED_ANY=true
 
-  OLD_FILES=$(find "$MIGRATIONS_DIR" \( -name "*_create_${SLUG}_flow.sql" -o -name "*_create_${SNAKE_SLUG}_flow.sql" \) 2>/dev/null || true)
+  # ── Compile first (failure-prone) — no destructive changes until this
+  # succeeds, so a transient ControlPlane hiccup leaves the tree + DB
+  # untouched and a retry of `dev sb flow` can pick up where it left off.
+  # `npx pgflow compile` writes to MIGRATIONS_DIR root (not jobs/) so it
+  # coexists with any OLD migration file still in jobs/.
+  compile_attempts=0
+  compile_max=3
+  while true; do
+    compile_attempts=$((compile_attempts + 1))
+    if (cd "$INVOKING_WT" && npx pgflow compile "$SLUG"); then
+      break
+    fi
+    if [ "$compile_attempts" -ge "$compile_max" ]; then
+      echo "" >&2
+      echo "Error: npx pgflow compile '$SLUG' failed after $compile_max attempts." >&2
+      echo "  Common causes:" >&2
+      echo "    - ControlPlane not running — try: dev sb up" >&2
+      echo "    - Docker Desktop DNS flake — retrying in a minute often works" >&2
+      echo "    - Deterministic flow-definition error — check the TS source" >&2
+      exit 1
+    fi
+    echo "  (compile attempt $compile_attempts/$compile_max failed — retrying in 3s)" >&2
+    sleep 3
+  done
+
+  NEW_FILE=$(find "$MIGRATIONS_DIR" -maxdepth 1 \( -name "*_create_${SLUG}_flow.sql" -o -name "*_create_${SNAKE_SLUG}_flow.sql" \) 2>/dev/null || true)
+  if [ -z "$NEW_FILE" ]; then
+    echo "Error: Migration file not found after compile" >&2
+    exit 1
+  fi
+
+  # ── Compile succeeded — now safe to do the destructive cleanup of the
+  # OLD migration + DB state.
+  OLD_FILES=$(find "$JOBS_DIR" \( -name "*_create_${SLUG}_flow.sql" -o -name "*_create_${SNAKE_SLUG}_flow.sql" \) 2>/dev/null || true)
 
   if [ -n "$OLD_FILES" ]; then
     OLD_VERSIONS=()
@@ -216,17 +256,9 @@ for SLUG in ${TODO_SLUGS[@]+"${TODO_SLUGS[@]}"}; do
     fi
   fi
 
-  (cd "$INVOKING_WT" && npx pgflow compile "$SLUG")
-
-  NEW_FILE=$(find "$MIGRATIONS_DIR" -maxdepth 1 \( -name "*_create_${SLUG}_flow.sql" -o -name "*_create_${SNAKE_SLUG}_flow.sql" \) 2>/dev/null || true)
-  if [ -n "$NEW_FILE" ]; then
-    mkdir -p "$JOBS_DIR"
-    mv "$NEW_FILE" "$JOBS_DIR/"
-    echo "    Moved to jobs/: $(basename "$NEW_FILE")"
-  else
-    echo "Error: Migration file not found after compile" >&2
-    exit 1
-  fi
+  mkdir -p "$JOBS_DIR"
+  mv "$NEW_FILE" "$JOBS_DIR/"
+  echo "    Moved to jobs/: $(basename "$NEW_FILE")"
 
   if ! grep -q "\[functions\.${WORKER_NAME}\]" "$CONFIG_FILE"; then
     echo "" >> "$CONFIG_FILE"
