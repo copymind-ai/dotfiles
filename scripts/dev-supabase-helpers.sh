@@ -17,7 +17,15 @@ require_bare_repo() {
 }
 
 supabase_is_running() {
-  supabase status --output json >/dev/null 2>&1
+  # Check Docker for the db container rather than `supabase status`, which
+  # exits non-zero whenever any container is unhealthy/restarting — that
+  # made `dev sb down` refuse to stop a broken stack.
+  local supabase_wt project_id
+  supabase_wt="$(resolve_supabase_wt 2>/dev/null)" || return 1
+  [ -f "$supabase_wt/supabase/config.toml" ] || return 1
+  project_id="$(get_project_id "$supabase_wt")"
+  [ -n "$project_id" ] || return 1
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "supabase_db_${project_id}"
 }
 
 resolve_supabase_wt() {
