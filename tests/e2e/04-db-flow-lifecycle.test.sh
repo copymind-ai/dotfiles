@@ -156,6 +156,27 @@ export { Mirror } from "./mirror.ts";
 export { Probe } from "./probe.ts";
 TS
 
+# pgflow 0.14+ requires the ControlPlane edge function to be reachable
+# during `npx pgflow compile`. The earlier guard scenario's trap did a
+# `supabase stop && supabase start`, which dropped `supabase functions
+# serve`. Re-spawn it now (match 03-db-reset's pattern). In normal dev
+# use this is handled by `dev sb up` / `dev sb reset`.
+header "start supabase functions serve (ControlPlane for pgflow compile)"
+if ! pgrep -f 'supabase functions serve' >/dev/null 2>&1; then
+  (cd "$SHARED_WT" && supabase functions serve) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+fi
+# Wait up to 30s for ControlPlane to respond. Skip-loop returns as soon
+# as the endpoint is up so happy-path runs don't pay the full timeout.
+CP_URL="http://localhost:54621/functions/v1/pgflow"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  curl -sf -o /dev/null -m 2 "$CP_URL" 2>/dev/null && break
+  # 401/404 from a booted runtime is fine — it means HTTP reached it
+  code=$(curl -s -o /dev/null -m 2 -w '%{http_code}' "$CP_URL" 2>/dev/null || echo 000)
+  [ "$code" != "000" ] && break
+  sleep 2
+done
+
 header "dev sb flow probe — compiles + scaffolds + syncs"
 cd "$FEAT_WT"
 EXIT_CODE=0

@@ -18,33 +18,21 @@ SUPABASE_HEAD=$(cd "$WORKTREE_BASE/supabase" && git rev-parse HEAD)
 ORIGIN_MAIN=$(cd "$TEST_DIR/repo.git" && git rev-parse origin/main)
 assert_eq "detached at origin/main" "$ORIGIN_MAIN" "$SUPABASE_HEAD"
 
-# ── Edge functions started by dev sb up ──────────────────────────────
-# pgflow's ensure_workers cron needs the edge runtime up to dispatch
-# flow tasks. Previously only `dev sb reset` started it, which was the
-# gap that made unreleased flows silently fail to run after `dev sb up`.
+# ── Edge runtime available after dev sb up ───────────────────────────
+# pgflow's ensure_workers cron needs the edge runtime container up to
+# dispatch flow tasks. Previously `dev sb up` would leave the shared
+# worktree in a state where the container was missing on platforms
+# where `supabase start` doesn't auto-spawn it (e.g. macOS Docker
+# Desktop with certain edge_runtime policies). On Linux CI runners
+# with Docker Engine, `supabase start` already spawns the container;
+# either way, the container MUST be running after `dev sb up`.
 
-header "dev sb up — edge functions started"
-assert_contains "starts edge functions" "Starting edge functions" "$OUTPUT"
-
-# The backgrounded `supabase functions serve` process spawns the edge
-# runtime container asynchronously. Poll briefly instead of a blind sleep.
+header "dev sb up — edge runtime container running"
 EDGE_CONTAINER="supabase_edge_runtime_test-int"
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  docker inspect "$EDGE_CONTAINER" >/dev/null 2>&1 && break
-  sleep 1
-done
-
-if pgrep -f 'supabase functions serve' >/dev/null 2>&1; then
+if docker inspect "$EDGE_CONTAINER" >/dev/null 2>&1 && \
+   [ "$(docker inspect -f '{{.State.Running}}' "$EDGE_CONTAINER" 2>/dev/null)" = "true" ]; then
   PASSED=$((PASSED + 1))
-  printf "  ${GREEN}✓${RESET} functions serve process running\n"
-else
-  FAILED=$((FAILED + 1))
-  printf "  ${RED}✗${RESET} functions serve process not running\n"
-fi
-
-if docker inspect "$EDGE_CONTAINER" >/dev/null 2>&1; then
-  PASSED=$((PASSED + 1))
-  printf "  ${GREEN}✓${RESET} edge runtime container running\n"
+  printf "  ${GREEN}✓${RESET} edge runtime container '$EDGE_CONTAINER' is running\n"
 else
   FAILED=$((FAILED + 1))
   printf "  ${RED}✗${RESET} edge runtime container '$EDGE_CONTAINER' not running\n"
@@ -55,10 +43,12 @@ OUTPUT=$("$SCRIPTS_DIR/dev-supabase-up.sh" 2>&1) || true
 
 assert_contains "updates worktree" "Updating supabase worktree" "$OUTPUT"
 assert_contains "already running" "already running" "$OUTPUT"
-assert_contains "detects existing edge functions" "Edge functions already running" "$OUTPUT"
+# Re-run must detect the edge runtime container and not try to double-start.
+# The message is printed by dev-supabase-up.sh when the container is already up.
+assert_contains "detects existing edge runtime" "Edge functions already running" "$OUTPUT"
 
-# Kill the backgrounded functions serve so test 03 starts from a clean slate
-# (matches the cleanup pattern used after 03-db-reset.test.sh's own checks).
+# Clean up any backgrounded `supabase functions serve` so later tests start
+# from a predictable state (matches 03-db-reset's post-assertion pkill).
 pkill -f 'supabase functions serve' 2>/dev/null || true
 
 print_results
