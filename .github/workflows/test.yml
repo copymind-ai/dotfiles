@@ -28,5 +28,13 @@ jobs:
           rm supabase.deb
           supabase --version
 
+      - name: Install pgflow CLI
+        # Required for the dev-sb-flow success-path e2e test, which runs
+        # real `npx pgflow compile` to produce migrations + worker files.
+        run: |
+          set -euo pipefail
+          npm install -g pgflow@0.14.1
+          pgflow --version || true
+
       - name: Run tests
         run: ./test.sh

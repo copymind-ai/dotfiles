@@ -21,11 +21,15 @@ printf "${BOLD}E2E: dev sb flow lifecycle${RESET}\n"
 # `supabase start`, so the edge runtime is always anchored there unless a
 # user runs raw `supabase ...` from a feature worktree.
 #
-# End-to-end `npx pgflow compile` is NOT tested here: Deno inside the
-# edge-runtime container can't reliably resolve jsr.io / registry.npmjs.org
-# under Docker Desktop on macOS without a pre-warmed cache. The compile
-# path is covered by pgflow's own test suite; this file focuses on the
-# orchestration that surrounds it — rsync, restart, and pre-pass guards.
+# End-to-end **worker boot** (Deno resolving jsr.io/npm from inside the
+# edge-runtime container) is NOT tested here: Docker Desktop on macOS
+# can't reliably resolve those registries without a pre-warmed cache.
+# That path is covered by pgflow's own test suite.
+#
+# We DO exercise real `npx pgflow compile` on the success path below —
+# compile runs on the host, not inside Docker, so the macOS Desktop DNS
+# quirk doesn't apply. The assertions only check artifacts on disk, not
+# whether the worker successfully boots and polls.
 
 SHARED_WT="$WORKTREE_BASE/supabase"
 PROJECT_ID="test-int"
@@ -122,6 +126,83 @@ assert_contains "points at versioning guide" "version-flows" "$OUTPUT"
 # Shared wt flows must be restored after the guard-triggered abort
 assert_file_exists "shared wt still has noop.ts" "$SHARED_WT/supabase/flows/noop.ts"
 assert_file_not_exists "shared wt has no mirror.ts (trap restored)" "$SHARED_WT/supabase/flows/mirror.ts"
+
+# ══════════════════════════════════════════════════════════════════════
+# Success path — a fresh unreleased flow compiles, scaffolds a worker,
+# and leaves the synced flow TS + worker dir + job-key.ts in the shared
+# worktree so `supabase functions serve` can discover + boot them.
+#
+# This catches three past regressions in one:
+#   1. Trap-on-success wiping flows/* + job-key.ts from shared wt
+#   2. scaffold_pgflow_worker landing only in the invoking worktree,
+#      leaving `supabase functions serve` unable to see the worker
+#   3. Absence of a green-path assertion for `dev sb flow` overall
+# ══════════════════════════════════════════════════════════════════════
+
+PROBE_SLUG="probe"
+PROBE_WORKER_DIR="$SHARED_WT/supabase/functions/${PROBE_SLUG}-worker"
+
+header "setup — fresh probe flow in feat-gamma (not released)"
+cat > "$FEAT_WT/supabase/flows/${PROBE_SLUG}.ts" <<'TS'
+import { Flow } from "@pgflow/dsl";
+
+export const Probe = new Flow<{ value: string }>({
+  slug: "probe",
+}).step({ slug: "ping" }, (input) => ({ ok: true, value: input.run.value }));
+TS
+cat > "$FEAT_WT/supabase/flows/index.ts" <<'TS'
+export { Noop } from "./noop.ts";
+export { Mirror } from "./mirror.ts";
+export { Probe } from "./probe.ts";
+TS
+
+header "dev sb flow probe — compiles + scaffolds + syncs"
+cd "$FEAT_WT"
+EXIT_CODE=0
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-supabase.sh" flow "$PROBE_SLUG" 2>&1) || EXIT_CODE=$?
+if [ "$EXIT_CODE" != "0" ]; then
+  printf "${DIM}flow output (expected 0):${RESET}\n%s\n" "$OUTPUT" >&2
+fi
+assert_exit_code "exits 0" "0" "$EXIT_CODE"
+assert_not_contains "trap did not fire on success" "Restoring shared worktree" "$OUTPUT"
+
+# Shared worktree retains the synced flow TS (trap-on-success kept it).
+# If the trap fired on the success path, probe.ts would have been wiped
+# and this assertion would fail.
+assert_file_exists "shared wt has flows/probe.ts" \
+  "$SHARED_WT/supabase/flows/${PROBE_SLUG}.ts"
+
+# Shared worktree has the scaffolded worker dir — landed there via the
+# post-scaffold rsync of supabase/functions/ (not just the invoking wt).
+# If scaffold only wrote to the invoking worktree, these would be missing.
+assert_file_exists "shared wt has functions/probe-worker/index.ts" \
+  "$PROBE_WORKER_DIR/index.ts"
+assert_file_exists "shared wt has functions/probe-worker/deno.json" \
+  "$PROBE_WORKER_DIR/deno.json"
+
+# Migration + worker-registration SQL are written to the invoking
+# worktree by compile/scaffold, then symlinked into the shared wt by
+# `dev sb flow` before `do_migrate_up` applies them.
+PROBE_MIG=$(find "$SHARED_WT/supabase/migrations/jobs" \
+  -maxdepth 1 -name "*_create_${PROBE_SLUG}_flow.sql" 2>/dev/null | head -n1)
+PROBE_REG=$(find "$SHARED_WT/supabase/migrations/jobs" \
+  -maxdepth 1 -name "*_register_${PROBE_SLUG}_worker.sql" 2>/dev/null | head -n1)
+
+if [ -n "$PROBE_MIG" ]; then
+  PASSED=$((PASSED + 1))
+  printf "  ${GREEN}✓${RESET} probe flow migration present in shared wt ($(basename "$PROBE_MIG"))\n"
+else
+  FAILED=$((FAILED + 1))
+  printf "  ${RED}✗${RESET} probe flow migration missing in shared wt\n"
+fi
+
+if [ -n "$PROBE_REG" ]; then
+  PASSED=$((PASSED + 1))
+  printf "  ${GREEN}✓${RESET} probe worker registration present in shared wt ($(basename "$PROBE_REG"))\n"
+else
+  FAILED=$((FAILED + 1))
+  printf "  ${RED}✗${RESET} probe worker registration missing in shared wt\n"
+fi
 
 # ── Return to main for later cleanup ─────────────────────────────────
 
