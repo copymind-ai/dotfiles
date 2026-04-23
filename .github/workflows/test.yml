@@ -14,8 +14,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Supabase CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SUPABASE_VERSION=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          set -euo pipefail
+          SUPABASE_VERSION=$(gh release view --repo supabase/cli --json tagName -q '.tagName' | sed 's/^v//')
+          if [[ -z "$SUPABASE_VERSION" ]]; then
+            echo "Failed to resolve latest supabase/cli version" >&2
+            exit 1
+          fi
           curl -fsSL "https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_amd64.deb" -o supabase.deb
           sudo dpkg -i supabase.deb
           rm supabase.deb
