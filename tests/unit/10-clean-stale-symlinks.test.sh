@@ -8,6 +8,7 @@ printf "${BOLD}Unit: clean_stale_symlinks${RESET}\n"
 _extract_fn() {
   awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase-helpers.sh"
 }
+eval "$(_extract_fn list_migration_dirs)"
 eval "$(_extract_fn clean_stale_symlinks)"
 
 header "removes broken symlinks"

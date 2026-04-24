@@ -38,4 +38,15 @@ ln -s "$WT/supabase/migrations/app/20260418000002_b.sql" "$SB/supabase/migration
 RESULT="$(find_new_migrations "$WT" "$SB")"
 assert_eq "skips correctly symlinked" "" "$RESULT"
 
+header "discovers arbitrarily-named subdir"
+setup_tmpdir
+
+WT="$TEST_TMPDIR/feat-c"
+SB="$TEST_TMPDIR/supabase"
+mkdir -p "$WT/supabase/migrations/analytics" "$SB/supabase/migrations"
+
+echo "sql" > "$WT/supabase/migrations/analytics/20260424000000_c.sql"
+RESULT="$(find_new_migrations "$WT" "$SB")"
+assert_contains "finds file under custom subdir" "analytics/20260424000000_c.sql" "$RESULT"
+
 print_results

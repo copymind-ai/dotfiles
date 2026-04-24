@@ -59,18 +59,36 @@ find_supabase_wt() {
   echo "$wt_path"
 }
 
+# Echo each migration directory that exists under <supabase_wt>, one per
+# line: the flat root plus every immediate subdirectory. Used by discovery
+# + cleanup helpers so adding supabase/migrations/<name>/ needs no script
+# edit.
+list_migration_dirs() {
+  local supabase_wt="$1"
+  local base="$supabase_wt/supabase/migrations"
+  [ -d "$base" ] || return 0
+  echo "$base"
+  local d
+  for d in "$base"/*/; do
+    [ -d "$d" ] || continue
+    echo "${d%/}"
+  done
+}
+
 find_new_migrations() {
   local wt_path="$1"
   local supabase_wt="$2"
   local basename_f
 
-  # Collect dirs to scan: named subdirs that exist, plus flat level if it has .sql files
+  # Collect dirs to scan: every subdir present in the invoking worktree,
+  # plus the flat root if it has .sql files.
   local targets=()
-  for d in app jobs; do
-    [ -d "$wt_path/supabase/migrations/$d" ] && targets+=("$d")
-  done
   for f in "$wt_path/supabase/migrations"/*.sql; do
     [ -f "$f" ] && targets+=("") && break
+  done
+  for d in "$wt_path/supabase/migrations"/*/; do
+    [ -d "$d" ] || continue
+    targets+=("$(basename "${d%/}")")
   done
 
   [ ${#targets[@]} -eq 0 ] && return 0
@@ -231,10 +249,8 @@ remove_wt_symlinks() {
   local supabase_wt="$2"
 
   local count=0
-  local f resolved
-  for dir in "$supabase_wt/supabase/migrations" \
-             "$supabase_wt/supabase/migrations/app" \
-             "$supabase_wt/supabase/migrations/jobs"; do
+  local f resolved dir
+  while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -e "$f" ] || [ -L "$f" ] || continue
@@ -246,7 +262,7 @@ remove_wt_symlinks() {
         fi
       fi
     done
-  done
+  done < <(list_migration_dirs "$supabase_wt")
 
   if [ "$count" -gt 0 ]; then
     echo "Removed $count symlink(s) from the supabase worktree"
@@ -258,10 +274,8 @@ clean_stale_symlinks() {
   local supabase_wt="$2"
 
   local count=0
-  local f resolved
-  for dir in "$supabase_wt/supabase/migrations" \
-             "$supabase_wt/supabase/migrations/app" \
-             "$supabase_wt/supabase/migrations/jobs"; do
+  local f resolved dir
+  while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
@@ -271,7 +285,7 @@ clean_stale_symlinks() {
         count=$((count + 1))
       fi
     done
-  done
+  done < <(list_migration_dirs "$supabase_wt")
 
   if [ "$count" -gt 0 ]; then
     echo "Removed $count stale symlink(s) from the supabase worktree"
@@ -282,10 +296,8 @@ clean_all_stale_symlinks() {
   local supabase_wt="$1"
 
   local count=0
-  local f
-  for dir in "$supabase_wt/supabase/migrations" \
-             "$supabase_wt/supabase/migrations/app" \
-             "$supabase_wt/supabase/migrations/jobs"; do
+  local f dir
+  while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
@@ -294,7 +306,7 @@ clean_all_stale_symlinks() {
         count=$((count + 1))
       fi
     done
-  done
+  done < <(list_migration_dirs "$supabase_wt")
 
   if [ "$count" -gt 0 ]; then
     echo "Removed $count stale symlink(s) from the supabase worktree"
@@ -589,10 +601,8 @@ unlink_worktree_migrations() {
 
   # Collect versions from this worktree's symlinks before removing them
   local versions=()
-  local f resolved basename_f version
-  for dir in "$supabase_wt/supabase/migrations" \
-             "$supabase_wt/supabase/migrations/app" \
-             "$supabase_wt/supabase/migrations/jobs"; do
+  local f resolved basename_f version dir
+  while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
@@ -603,7 +613,7 @@ unlink_worktree_migrations() {
         versions+=("$version")
       fi
     done
-  done
+  done < <(list_migration_dirs "$supabase_wt")
 
   remove_wt_symlinks "$wt_path" "$supabase_wt"
 

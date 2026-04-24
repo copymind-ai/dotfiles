@@ -8,6 +8,7 @@ printf "${BOLD}Unit: remove_wt_symlinks${RESET}\n"
 _extract_fn() {
   awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase-helpers.sh"
 }
+eval "$(_extract_fn list_migration_dirs)"
 eval "$(_extract_fn remove_wt_symlinks)"
 
 header "removes only target worktree symlinks"
