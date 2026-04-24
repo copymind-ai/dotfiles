@@ -39,13 +39,10 @@ do_seed_up "$supabase_wt"
 
 echo ""
 echo "==> Starting edge functions..."
-# Redirect the WHOLE subshell's fd 1/2 to /dev/null (not just the inner
-# command's) and redirect stdin from /dev/null. Otherwise the backgrounded
-# subshell keeps the parent's pipe (from command substitution) open, which
-# deadlocks any caller that does OUTPUT=$(dev sb reset).
-# config.toml commits to [edge_runtime] enabled = true — no need to check.
-(cd "$supabase_wt" && supabase functions serve) </dev/null >/dev/null 2>&1 &
-disown 2>/dev/null || true
+# `supabase db reset --local` restarts containers, so the edge runtime
+# container is freshly recreated but `supabase functions serve` host
+# process from the previous session is gone. Spawn a new one.
+ensure_functions_serve "$supabase_wt"
 sleep 5
 
 echo ""

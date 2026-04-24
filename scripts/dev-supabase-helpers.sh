@@ -443,6 +443,68 @@ wait_for_control_plane() {
   done
 }
 
+# Spawn `supabase functions serve` in the background, detached from this
+# shell. Internal helper — callers use ensure_functions_serve / reload_edge_runtime.
+_spawn_functions_serve() {
+  local supabase_wt="$1"
+  (cd "$supabase_wt" && supabase functions serve) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+# Ensure the Supabase edge runtime container + `supabase functions serve`
+# host process are running. The container and the host process can die
+# independently (e.g. `supabase db reset --local` recreates the container
+# but the prior host process is orphaned), so both are checked. Idempotent
+# — only spawns a new functions serve if either side is missing.
+#
+# Used by `dev sb up`, `dev sb reset`.
+ensure_functions_serve() {
+  local supabase_wt="$1"
+  local project_id
+  project_id="$(get_project_id "$supabase_wt")"
+  local container_up=false host_up=false
+  if docker ps --filter "name=supabase_edge_runtime_${project_id}" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    container_up=true
+  fi
+  if pgrep -f "supabase functions serve" >/dev/null 2>&1; then
+    host_up=true
+  fi
+  if [ "$container_up" = true ] && [ "$host_up" = true ]; then
+    echo "Edge functions already running."
+    return 0
+  fi
+  # If only one side is up, kill whichever is stale and respawn cleanly —
+  # spawning a fresh functions serve alongside a stale container or a stale
+  # host process leaves the stack in a split-brain state.
+  if [ "$host_up" = true ] && [ "$container_up" = false ]; then
+    pkill -f "supabase functions serve" 2>/dev/null || true
+  fi
+  echo "Starting edge functions..."
+  _spawn_functions_serve "$supabase_wt"
+}
+
+# Force-reload the edge runtime so Deno drops its module cache for any
+# previously-imported flow source. Required by `dev sb flow` AFTER rsyncing
+# new flow source into the shared worktree: without this, pgflow's
+# ControlPlane returns WorkerAlreadyRetired / WORKER_ERROR because it has
+# cached the old flow module and refuses to recompile the changed one.
+# `supabase functions serve`'s own file-watch hot-reload is NOT sufficient
+# for transitively-imported flow files — only a container restart drops
+# the import cache.
+reload_edge_runtime() {
+  local supabase_wt="$1"
+  local project_id
+  project_id="$(get_project_id "$supabase_wt")"
+  local api_port
+  api_port="$(awk '/^\[api\]/{f=1;next}/^\[/{f=0}f&&/^port[[:space:]]*=/{gsub(/[^0-9]/,"");print;exit}' "$supabase_wt/supabase/config.toml")"
+  [ -z "$api_port" ] && api_port=54321
+  echo "==> Reloading edge runtime (supabase_edge_runtime_${project_id})"
+  pkill -f 'supabase functions serve' 2>/dev/null || true
+  docker restart "supabase_edge_runtime_${project_id}" >/dev/null 2>&1 || true
+  _spawn_functions_serve "$supabase_wt"
+  wait_for_control_plane "$api_port"
+}
+
 # --- Retry with progressive backoff -----------------------------------
 #
 # Generic retry wrapper for flaky Supabase/Docker operations. Backoff

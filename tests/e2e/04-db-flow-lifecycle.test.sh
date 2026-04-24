@@ -182,6 +182,11 @@ fi
 assert_exit_code "exits 0" "0" "$EXIT_CODE"
 assert_contains "takes up-to-date shortcut" "Up to date — skipping" "$OUTPUT"
 assert_not_contains "trap did not fire on success" "Restoring shared worktree" "$OUTPUT"
+# Guard against regression: the edge-runtime reload is expensive (pkill +
+# docker restart + respawn + wait) and should only fire when at least one
+# slug needs recompile. The "Up to date" shortcut short-circuits past it.
+assert_not_contains "up-to-date path skips edge-runtime reload" \
+  "Reloading edge runtime" "$OUTPUT"
 
 # Pre-pass rsync'd probe.ts into the shared worktree. If the trap had
 # fired on the success path (the original bug), probe.ts would be
