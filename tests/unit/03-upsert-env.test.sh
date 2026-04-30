@@ -5,10 +5,8 @@ source "$(dirname "$0")/../helpers.sh"
 echo ""
 printf "${BOLD}Unit: upsert_env${RESET}\n"
 
-_source_fn() {
-  eval "$(sed -n "/^${1}()/,/^}/p" "$SCRIPTS_DIR/dev-worktree-env.sh")"
-}
-_source_fn upsert_env
+# shellcheck disable=SC1091
+source "$SCRIPTS_DIR/dev-helpers.sh"
 
 header "insert and update"
 setup_tmpdir

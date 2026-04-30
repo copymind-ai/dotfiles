@@ -5,15 +5,18 @@ set -euo pipefail
 # Run this once after `git clone --bare` to set up the initial working directory.
 # Usage: dev wt init
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/dev-helpers.sh"
+
 # --- Bare repo check ---
+# Custom "not a git repo" message comes first; require_bare_repo's own
+# git rev-parse would otherwise emit git's less-friendly default.
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)" || {
   echo "Error: Not inside a git repository." >&2
   exit 1
 }
-if ! git -C "$GIT_COMMON_DIR" rev-parse --is-bare-repository 2>/dev/null | grep -q "true"; then
-  echo "Error: You should clone the repo with --bare flag enabled to use the worktree setup script." >&2
-  exit 1
-fi
+require_bare_repo
 
 # --- Check no worktrees exist yet ---
 WT_COUNT=$(git worktree list | wc -l | tr -d ' ')
@@ -66,7 +69,6 @@ else
 fi
 
 # --- Initialize port registry ---
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_FILE="$WORKTREE_DIR/docker-compose.yml"
 REGISTRY="$BARE_DIR/.worktree-ports"
 if [ -f "$COMPOSE_FILE" ]; then

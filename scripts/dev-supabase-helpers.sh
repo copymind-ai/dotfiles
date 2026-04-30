@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # Shared helpers for dev-supabase-*.sh scripts. Source this, don't execute.
 
+# Side-effect-free utilities (upsert_env, etc.). Sourced first so the
+# functions are available even if the supabase CLI check below aborts.
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/dev-helpers.sh"
+
 # --- Require supabase CLI ---
 if ! command -v supabase &>/dev/null; then
   echo "Error: supabase CLI not found. Install via: brew install supabase/tap/supabase" >&2
   exit 1
 fi
-
-require_bare_repo() {
-  local git_common_dir
-  git_common_dir="$(git rev-parse --git-common-dir)"
-  if ! git -C "$git_common_dir" rev-parse --is-bare-repository 2>/dev/null | grep -q "true"; then
-    echo "Error: You should clone the repo with --bare flag enabled to use the worktree setup script." >&2
-    exit 1
-  fi
-}
 
 supabase_is_running() {
   # Check Docker for the db container rather than `supabase status`, which
@@ -34,18 +30,6 @@ resolve_supabase_wt() {
   parent_dir="$(cd "$current_wt/.." && pwd)"
   echo "$parent_dir/supabase"
 }
-
-ensure_fetch_refspec() {
-  if ! git config --get remote.origin.fetch &>/dev/null; then
-    git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-  fi
-}
-
-# --- Colors ---
-RED='\033[31m'
-GREEN='\033[32m'
-DIM='\033[2m'
-RESET='\033[0m'
 
 # --- Migration helpers ---
 
@@ -331,6 +315,19 @@ get_db_port() {
   ' "$supabase_wt/supabase/config.toml"
 }
 
+# Read [api] port from config.toml, falling back to 54321 if the section
+# or value is missing. Mirrors get_db_port's parsing approach.
+get_api_port() {
+  local supabase_wt="$1"
+  local port
+  port=$(awk '
+    /^\[api\]/ { in_api = 1; next }
+    /^\[/ { in_api = 0 }
+    in_api && /^port[[:space:]]*=/ { gsub(/[^0-9]/, ""); print; exit }
+  ' "$supabase_wt/supabase/config.toml")
+  echo "${port:-54321}"
+}
+
 # --- Migration + seed engines ---
 
 # Flatten supabase/migrations/<subdir>/*.sql into a flat dir, run `supabase
@@ -508,43 +505,12 @@ reload_edge_runtime() {
   local project_id
   project_id="$(get_project_id "$supabase_wt")"
   local api_port
-  api_port="$(awk '/^\[api\]/{f=1;next}/^\[/{f=0}f&&/^port[[:space:]]*=/{gsub(/[^0-9]/,"");print;exit}' "$supabase_wt/supabase/config.toml")"
-  [ -z "$api_port" ] && api_port=54321
+  api_port="$(get_api_port "$supabase_wt")"
   echo "==> Reloading edge runtime (supabase_edge_runtime_${project_id})"
   pkill -f 'supabase functions serve' 2>/dev/null || true
   docker restart "supabase_edge_runtime_${project_id}" >/dev/null 2>&1 || true
   _spawn_functions_serve "$supabase_wt"
   wait_for_control_plane "$api_port"
-}
-
-# --- Retry with progressive backoff -----------------------------------
-#
-# Generic retry wrapper for flaky Supabase/Docker operations. Backoff
-# grows linearly: 15s, 20s, 25s, 30s ... (10 + attempt * 5).
-#
-# Usage:
-#   retry_with_backoff <max_attempts> <label> <command> [args...]
-#
-# The command is invoked via "$@" — pass a function name (or an external
-# command). Inside an `if`, errexit is suspended, so a non-zero return
-# from the command is captured rather than terminating the caller.
-retry_with_backoff() {
-  local max_attempts="$1"; shift
-  local label="$1"; shift
-  local attempts=0
-  while true; do
-    attempts=$((attempts + 1))
-    if "$@"; then
-      return 0
-    fi
-    if [ "$attempts" -ge "$max_attempts" ]; then
-      echo "Error: $label failed after $max_attempts attempts" >&2
-      return 1
-    fi
-    local backoff=$((10 + attempts * 5))
-    echo "  (attempt $attempts/$max_attempts failed — retrying in ${backoff}s)"
-    sleep "$backoff"
-  done
 }
 
 # Run `supabase db reset --local` inside the supabase worktree, retrying

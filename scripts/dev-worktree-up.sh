@@ -16,13 +16,10 @@ fi
 
 BRANCH_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/dev-helpers.sh"
 
-# --- Bare repo check ---
-GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
-if ! git -C "$GIT_COMMON_DIR" rev-parse --is-bare-repository 2>/dev/null | grep -q "true"; then
-  echo "Error: You should clone the repo with --bare flag enabled to use the worktree setup script." >&2
-  exit 1
-fi
+require_bare_repo
 
 # --- Must be run from inside an existing worktree ---
 if ! CURRENT_WORKTREE="$(git rev-parse --show-toplevel 2>/dev/null)"; then

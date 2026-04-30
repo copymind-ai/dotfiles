@@ -5,20 +5,12 @@ set -euo pipefail
 # Injects environment variables from running services (Supabase, etc.).
 # Usage: dev worktree env
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/dev-helpers.sh"
+
 WORKTREE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 ENV_FILE="$WORKTREE_DIR/.env.local"
-
-# Update or append a key=value pair in a file
-upsert_env() {
-  local file="$1" key="$2" val="$3"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    sed "s|^${key}=.*|${key}=${val}|" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
-  else
-    # Ensure file ends with a newline before appending to avoid concatenation
-    [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ] && echo "" >>"$file"
-    echo "${key}=${val}" >>"$file"
-  fi
-}
 
 # Classify a Supabase-related env var name by suffix, echoing the matching
 # `supabase status --output json` field (or empty if unmapped).
