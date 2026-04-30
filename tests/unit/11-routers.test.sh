@@ -49,6 +49,7 @@ OUTPUT=$(bash "$SCRIPTS_DIR/dev-supabase.sh" 2>&1) || EXIT_CODE=$?
 assert_contains "lists link" "link" "$OUTPUT"
 assert_contains "lists unlink" "unlink" "$OUTPUT"
 assert_contains "lists sync" "sync" "$OUTPUT"
+assert_contains "lists anchor" "anchor" "$OUTPUT"
 
 # ── Non-bare repo checks ────────────────────────────────────────────
 
