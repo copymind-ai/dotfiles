@@ -79,6 +79,11 @@ done
 # rewrites the shims. We gate on `pnpm` existing to keep the script's
 # "installed / already installed" output symmetric.
 if command -v corepack &>/dev/null; then
+  # Bundled corepack ships with pnpm/yarn signing keys that go stale and
+  # break `corepack enable` with "Cannot find matching keyid". Update first
+  # so the shims can verify pnpm. No-op when already on latest.
+  info "Updating Corepack..."
+  npm install -g corepack@latest
   if ! command -v pnpm &>/dev/null; then
     info "Enabling Corepack shims (pnpm, yarn)..."
     corepack enable
