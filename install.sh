@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Test marker: verifying `dev upd` prompts for install.sh re-run.
 DOTFILES="$(cd "$(dirname "$0")" && pwd)"
 
 # Work from a world-readable dir so Homebrew's sandbox can stat the CWD.
