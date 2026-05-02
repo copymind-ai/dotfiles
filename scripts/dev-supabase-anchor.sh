@@ -19,8 +19,6 @@ set -euo pipefail
 #      is recreated with the new env baked in. A partial restart is not
 #      enough — `supabase start` against a half-up stack short-circuits
 #      with "already running" and never recreates the container.
-#   4. Sets restart policy to unless-stopped so a future OOM kill
-#      auto-recovers instead of leaving workers offline indefinitely.
 #
 # Usage: dev sb anchor   (run from the worktree you want to anchor to)
 
@@ -57,15 +55,8 @@ if [ ! -d "$SHARED_WT" ] || [ ! -f "$SHARED_WT/supabase/config.toml" ]; then
   exit 1
 fi
 
-PROJECT_ID="$(get_project_id "$SHARED_WT")"
-if [ -z "$PROJECT_ID" ]; then
-  echo "Error: Could not read project_id from $SHARED_WT/supabase/config.toml" >&2
-  exit 1
-fi
-
 ENV_FILE="$SHARED_WT/.env.local"
 NEW_VALUE="http://host.docker.internal:${APP_PORT}"
-EDGE_CONTAINER="supabase_edge_runtime_${PROJECT_ID}"
 
 # ── Rewrite COPYMIND_API_HOST in shared .env.local ───────────────────
 # upsert_env preserves every other line and handles both "key already
@@ -88,7 +79,7 @@ else
   # already down, half-up state) would otherwise skip start entirely.
   # `|| true` on stop swallows the "nothing to stop" case; start is left
   # to fail loudly because we genuinely need it to succeed.
-  echo "==> Cycling Supabase stack to recreate $EDGE_CONTAINER with new env"
+  echo "==> Cycling Supabase stack to recreate edge runtime with new env"
   (
     cd "$SHARED_WT"
     supabase stop >/dev/null 2>&1 || true
@@ -102,18 +93,6 @@ else
   wait_for_control_plane "$API_PORT" || {
     echo "Warning: ControlPlane did not come up within timeout — workers may need a moment." >&2
   }
-fi
-
-# ── Apply restart policy (survives OOM kills) ────────────────────────
-# Edge runtime sometimes OOM-kills under load. Default policy is `no`,
-# leaving every worker offline until manual intervention. `unless-stopped`
-# auto-revives but still respects an explicit `docker stop` from
-# `dev sb down`. Idempotent — safe to re-run.
-if docker update --restart unless-stopped "$EDGE_CONTAINER" >/dev/null 2>&1; then
-  echo "    restart policy: unless-stopped"
-else
-  echo "Warning: could not apply restart=unless-stopped to $EDGE_CONTAINER." >&2
-  echo "  The container may not be running. Run 'dev sb status' to verify." >&2
 fi
 
 echo ""

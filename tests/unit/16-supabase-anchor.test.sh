@@ -9,20 +9,16 @@ setup_tmpdir
 
 # ── Stub external binaries ────────────────────────────────────────────
 # `supabase` is required during dev-supabase-helpers.sh sourcing (top-level
-# `command -v` check). `docker` and `git` are invoked by the anchor script
-# itself; we record every call so the assertions can verify the full
-# command sequence.
+# `command -v` check). `docker` is invoked transitively by
+# ensure_functions_serve (`docker ps --filter ...`).
 #
-# Stubs honour two env knobs so individual cases can simulate failures
-# without rewriting the stub between cases:
+# `supabase` honours one env knob so individual cases can simulate
+# failures without rewriting the stub between cases:
 #   SUPABASE_STOP_EXIT   — exit code for `supabase stop` (default 0)
-#   DOCKER_UPDATE_EXIT   — exit code for `docker update ...` (default 0)
 STUB_BIN="$TEST_TMPDIR/bin"
 mkdir -p "$STUB_BIN"
 
-DOCKER_LOG="$TEST_TMPDIR/docker.log"
 SUPABASE_LOG="$TEST_TMPDIR/supabase.log"
-: > "$DOCKER_LOG"
 : > "$SUPABASE_LOG"
 
 cat > "$STUB_BIN/supabase" <<STUB
@@ -44,12 +40,8 @@ exit 0
 STUB
 chmod +x "$STUB_BIN/curl"
 
-cat > "$STUB_BIN/docker" <<STUB
+cat > "$STUB_BIN/docker" <<'STUB'
 #!/usr/bin/env bash
-echo "docker \$*" >> "$DOCKER_LOG"
-if [ "\$1" = "update" ]; then
-  exit "\${DOCKER_UPDATE_EXIT:-0}"
-fi
 exit 0
 STUB
 chmod +x "$STUB_BIN/docker"
@@ -141,9 +133,8 @@ assert_exit_code "exits with 1" "1" "$EXIT_CODE"
 assert_contains "mentions supabase worktree" "supabase" "$OUTPUT"
 
 # ── Case 4: happy path ────────────────────────────────────────────────
-header "happy path — updates env, recreates container, applies restart policy"
+header "happy path — updates env, cycles the stack"
 reset_env_file
-: > "$DOCKER_LOG"
 : > "$SUPABASE_LOG"
 EXIT_CODE=0
 OUTPUT=$(cd "$INVOKING_WT" && bash "$ANCHOR_SCRIPT" 2>&1) || EXIT_CODE=$?
@@ -169,20 +160,11 @@ SUPABASE_CALLS="$(cat "$SUPABASE_LOG")"
 assert_contains "stops the stack" "supabase stop" "$SUPABASE_CALLS"
 assert_contains "restarts the stack" "supabase start" "$SUPABASE_CALLS"
 
-# Docker is only used to apply the restart policy on the recreated
-# container (idempotent, survives future OOM kills).
-DOCKER_CALLS="$(cat "$DOCKER_LOG")"
-assert_contains "applies unless-stopped policy" \
-  "update --restart unless-stopped supabase_edge_runtime_copymind-app" "$DOCKER_CALLS"
-assert_contains "announces restart policy on success" "restart policy: unless-stopped" "$OUTPUT"
-
 # ── Case 5: idempotent — value already correct, stack cycle skipped ───
 header "idempotent — re-running with matching env skips stack cycle"
 # After Case 4 the env file is already at port 3008. A re-run should
 # notice the value is unchanged and skip the costly supabase stop/start
 # (the cycle takes ~10s and drops every connection running workers hold).
-# Restart policy still gets re-applied because it's cheap and idempotent.
-: > "$DOCKER_LOG"
 : > "$SUPABASE_LOG"
 EXIT_CODE=0
 OUTPUT=$(cd "$INVOKING_WT" && bash "$ANCHOR_SCRIPT" 2>&1) || EXIT_CODE=$?
@@ -196,17 +178,12 @@ assert_not_contains "did not stop the stack" "supabase stop" "$SUPABASE_CALLS"
 assert_not_contains "did not start the stack" "supabase start" "$SUPABASE_CALLS"
 assert_contains "tells the user it skipped" "env unchanged" "$OUTPUT"
 
-DOCKER_CALLS="$(cat "$DOCKER_LOG")"
-assert_contains "still applies restart policy on no-op" \
-  "update --restart unless-stopped" "$DOCKER_CALLS"
-
 # ── Case 6: supabase stop fails — start must still run ────────────────
 header "stop returning nonzero does not skip start (set -e short-circuit fix)"
 # Regression coverage: previously the script chained the two with `&&`,
 # so a non-zero stop (down stack, half-up state) would skip start under
 # `set -e` and exit the script with no anchor applied.
 reset_env_file
-: > "$DOCKER_LOG"
 : > "$SUPABASE_LOG"
 EXIT_CODE=0
 OUTPUT=$(cd "$INVOKING_WT" && SUPABASE_STOP_EXIT=1 bash "$ANCHOR_SCRIPT" 2>&1) || EXIT_CODE=$?
@@ -215,21 +192,5 @@ assert_exit_code "exits with 0 even though stop failed" "0" "$EXIT_CODE"
 SUPABASE_CALLS="$(cat "$SUPABASE_LOG")"
 assert_contains "still attempted stop" "supabase stop" "$SUPABASE_CALLS"
 assert_contains "ran start despite stop failure" "supabase start" "$SUPABASE_CALLS"
-
-# ── Case 7: docker update fails — warns instead of lying ──────────────
-header "docker update failure surfaces a warning"
-# Regression coverage: previously a failed `docker update` was swallowed
-# by `|| true` and the script unconditionally printed
-# "restart policy: unless-stopped", lying about the outcome.
-reset_env_file
-: > "$DOCKER_LOG"
-: > "$SUPABASE_LOG"
-EXIT_CODE=0
-OUTPUT=$(cd "$INVOKING_WT" && DOCKER_UPDATE_EXIT=1 bash "$ANCHOR_SCRIPT" 2>&1) || EXIT_CODE=$?
-
-assert_exit_code "exits with 0" "0" "$EXIT_CODE"
-assert_contains "warns about failed update" "could not apply restart=unless-stopped" "$OUTPUT"
-assert_not_contains "does not falsely announce success" \
-  "restart policy: unless-stopped" "$OUTPUT"
 
 print_results
