@@ -5,10 +5,10 @@ set -euo pipefail
 # Usage: dev <command> [args]
 #
 # Commands:
-#   s,  session    Tmux dev sessions
-#   sb, supabase   Shared local Supabase instance
-#   wt, worktree   Git worktrees with Docker isolation
-#   update         Pull latest dotfiles changes
+#   s,   session    Tmux dev sessions
+#   sb,  supabase   Shared local Supabase instance
+#   wt,  worktree   Git worktrees with Docker isolation
+#   upd, update     Pull latest dotfiles changes
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -25,7 +25,7 @@ case "${1:-}" in
     shift
     exec "$SCRIPT_DIR/dev-supabase.sh" "$@"
     ;;
-  update)
+  upd|update)
     shift
     exec "$SCRIPT_DIR/dev-update.sh" "$@"
     ;;
@@ -33,10 +33,10 @@ case "${1:-}" in
     echo "Usage: dev <command> [args]" >&2
     echo "" >&2
     echo "Commands:" >&2
-    echo "  s,  session    Tmux dev sessions" >&2
-    echo "  sb, supabase   Shared local Supabase instance" >&2
-    echo "  wt, worktree   Git worktrees with Docker isolation" >&2
-    echo "  update         Pull latest dotfiles changes" >&2
+    echo "  s,   session    Tmux dev sessions" >&2
+    echo "  sb,  supabase   Shared local Supabase instance" >&2
+    echo "  wt,  worktree   Git worktrees with Docker isolation" >&2
+    echo "  upd, update     Pull latest dotfiles changes" >&2
     echo "" >&2
     echo "Run 'dev <command>' to see subcommands." >&2
     exit 1
