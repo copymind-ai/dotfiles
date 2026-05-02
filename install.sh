@@ -73,6 +73,22 @@ for pkg in tmux neovim ripgrep jq node; do
   fi
 done
 
+# --- Corepack (pnpm/yarn shims pinned per-project via packageManager) ---
+# Ships with the brew `node` formula. `corepack enable` writes shims into the
+# Homebrew prefix's bin/ — user-owned, so no sudo. Idempotent: re-running just
+# rewrites the shims. We gate on `pnpm` existing to keep the script's
+# "installed / already installed" output symmetric.
+if command -v corepack &>/dev/null; then
+  if ! command -v pnpm &>/dev/null; then
+    info "Enabling Corepack shims (pnpm, yarn)..."
+    corepack enable
+  else
+    ok "Corepack shims already enabled"
+  fi
+else
+  warn "corepack not found (expected to ship with node) — skipping"
+fi
+
 # --- Supabase CLI ---
 if ! command -v supabase &>/dev/null; then
   info "Installing Supabase CLI..."

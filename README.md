@@ -15,6 +15,7 @@ Team configuration files for local development.
 | [TPM](https://github.com/tmux-plugins/tpm)                   | Tmux Plugin Manager, auto-installs tmux plugins         |
 | [Supabase CLI](https://supabase.com/docs/guides/cli)         | Local Supabase stack, required by `dev sb`              |
 | [Node.js](https://nodejs.org/)                               | Runtime for `pgflow`                                    |
+| [Corepack](https://github.com/nodejs/corepack)               | Provides pnpm/yarn shims pinned per-project (ships with Node) |
 | [pgflow](https://pgflow.dev/)                                | Flow compiler, required by `dev sb flow`                |
 
 ## Structure

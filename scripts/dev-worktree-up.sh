@@ -115,7 +115,7 @@ if [ -f "package-lock.json" ]; then
 elif [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
   bun install
 elif [ -f "yarn.lock" ]; then
-  yarn install --frozen-lockfile
+  yarn install --immutable
 elif [ -f "pnpm-lock.yaml" ]; then
   pnpm install --frozen-lockfile
 fi
