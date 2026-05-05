@@ -112,17 +112,18 @@ vercel_check_auth() {
   fi
 }
 
-# Returns 0 if <name> is set in <env>, 1 otherwise. Requires `jq`.
-# <env> is one of: production, preview, development.
-# Tolerates both [{key:...}, ...] and {envs:[{key:...}, ...]} JSON shapes
-# across Vercel CLI versions.
+# Returns 0 if <name> is set in <env>, 1 otherwise. Uses the Vercel
+# REST API directly instead of `vercel env ls --json`, because the
+# latter (a) isn't supported on every CLI version (some reject --json
+# entirely) and (b) filters out encrypted/sensitive entries on others.
+# The API is the only reliable source of truth.
 vercel_var_exists() {
   local env="$1" name="$2"
-  vercel env ls "$env" --json 2>/dev/null \
-    | jq -e --arg k "$name" '
-        ( if type=="array" then . else (.envs // []) end )
-        | .[] | select(.key==$k)
-      ' >/dev/null 2>&1
+  # Resolve script dir relative to this helpers file (dev-helpers.sh
+  # is sourced from sibling scripts; ${BASH_SOURCE[0]} points here).
+  local helpers_dir
+  helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  node "$helpers_dir/dev-env-vercel-exists.mjs" "$name" "$env" 2>/dev/null
 }
 
 # Generic retry wrapper for flaky operations. Backoff grows linearly:

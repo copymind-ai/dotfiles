@@ -66,6 +66,10 @@ if [ "$mode" = "all" ] || [ "$mode" = "dev" ]; then
 fi
 
 # --- Push to Vercel ---
+# Production and preview vars use --no-sensitive so the value is
+# readable later (via vercel env pull / dashboard / dev env pull).
+# Development vars don't carry the sensitive flag, so no marker needed.
+dev_pushed=0
 for env in "${vercel_envs[@]}"; do
   case "$env" in
     production|preview) value="$prod_value" ;;
@@ -74,26 +78,40 @@ for env in "${vercel_envs[@]}"; do
 
   if vercel_var_exists "$env" "$name"; then
     if confirm "$name already set in $env. Update?" n; then
-      vercel env rm "$name" "$env" -y >/dev/null 2>&1 || true
+      # `--yes` must come before positionals (otherwise Vercel CLI treats it
+      # as the optional [gitbranch] arg). Piping `y` is the belt-and-suspenders.
+      echo y | vercel env rm --yes "$name" "$env" >/dev/null 2>&1 || true
     else
       printf "${DIM}skip %s (kept existing)${RESET}\n" "$env"
       continue
     fi
   fi
 
-  # Pipe value via stdin; --sensitive=false marks the var as plaintext (readable)
-  printf '%s' "$value" \
-    | vercel env add "$name" "$env" --sensitive=false >/dev/null 2>&1 \
-    || {
-      # Older CLIs may not accept --sensitive=false; retry without it (default is non-sensitive)
-      printf '%s' "$value" \
-        | vercel env add "$name" "$env" >/dev/null 2>&1
-    }
-  printf "${GREEN}vercel${RESET}      added %s in %s\n" "$name" "$env"
+  # Use the Vercel REST API directly — `vercel env add` has interactive
+  # prompts that can't be reliably piped (especially the preview-only
+  # "Add to which Git branch?" prompt; vercel/vercel#15763). The helper
+  # POSTs to /v10/projects/{id}/env with gitBranch=null for preview =
+  # "all preview branches".
+  err_log="$(mktemp)"
+  sensitive_env=""
+  # All envs are added as plain (non-sensitive) so dev env pull can
+  # round-trip values back into .env.local.
+  if VAR_VALUE="$value" SENSITIVE="$sensitive_env" \
+       node "$SCRIPT_DIR/dev-env-add-vercel.mjs" "$name" "$env" 2>"$err_log"; then
+    printf "${GREEN}vercel${RESET}      added %s in %s\n" "$name" "$env"
+    [ "$env" = "development" ] && dev_pushed=1
+  else
+    printf "${RED}vercel${RESET}      failed to add %s in %s:\n" "$name" "$env" >&2
+    [ -s "$err_log" ] && sed 's/^/    /' "$err_log" >&2
+  fi
+  rm -f "$err_log"
 done
 
 # --- Mirror development into .env.local ---
-if [ "$write_local" = "1" ]; then
+# Only write if development was actually pushed to Vercel — otherwise the
+# user explicitly skipped the Vercel update and we'd create local/Vercel
+# drift by overwriting their existing local value with the new prompt input.
+if [ "$write_local" = "1" ] && [ "$dev_pushed" = "1" ]; then
   upsert_env_sorted "$ROOT/.env.local" "$name" "$dev_value"
   printf "${GREEN}.env.local${RESET}  set %s\n" "$name"
 fi

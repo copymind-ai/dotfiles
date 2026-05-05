@@ -6,7 +6,7 @@
 // Usage: dev env push [--force]
 
 import { existsSync, readFileSync } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -31,7 +31,7 @@ if (!existsSync(localPath)) {
   process.exit(1);
 }
 
-// --- Verify Vercel auth ---
+// --- Verify Vercel auth & resolve project + token ---
 try {
   execSync("which vercel", { stdio: "ignore" });
 } catch {
@@ -44,11 +44,55 @@ try {
   console.error("Error: not logged in to Vercel. Run: vercel login");
   process.exit(1);
 }
-if (!existsSync(path.join(root, ".vercel/project.json"))) {
+const projectFile = path.join(root, ".vercel/project.json");
+if (!existsSync(projectFile)) {
   console.error(
     `Error: Vercel project not linked. Run: vercel link (from ${root})`,
   );
   process.exit(1);
+}
+const project = JSON.parse(readFileSync(projectFile, "utf8"));
+const projectId = project.projectId;
+const teamId = project.orgId;
+
+const authCandidates = [
+  path.join(
+    process.env.HOME,
+    "Library/Application Support/com.vercel.cli/auth.json",
+  ),
+  path.join(process.env.HOME, ".local/share/com.vercel.cli/auth.json"),
+  path.join(process.env.HOME, ".config/com.vercel.cli/auth.json"),
+];
+const authPath = authCandidates.find((p) => existsSync(p));
+if (!authPath) {
+  console.error("Error: Vercel auth file not found. Run: vercel login");
+  process.exit(1);
+}
+const apiToken = JSON.parse(readFileSync(authPath, "utf8")).token;
+const apiQuery = teamId ? `?teamId=${teamId}` : "";
+
+async function vercelApi(method, pathSuffix, body) {
+  const url = `https://api.vercel.com${pathSuffix}${pathSuffix.includes("?") ? "&" : apiQuery}`;
+  const init = {
+    method,
+    headers: { Authorization: `Bearer ${apiToken}` },
+  };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, init);
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text;
+    try {
+      msg = JSON.parse(text)?.error?.message || text;
+    } catch {
+      /* keep raw */
+    }
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+  return text ? JSON.parse(text) : {};
 }
 
 // --- Parse .env.local ---
@@ -118,34 +162,50 @@ function parseEnvFile(text) {
 const envText = readFileSync(localPath, "utf8");
 const localEnv = parseEnvFile(envText);
 const allKeys = Object.keys(localEnv).sort();
-const keys = allKeys.filter((k) => localEnv[k] !== "");
+
+// Skip Vercel-system vars (VERCEL_*) — these are auto-injected by Vercel
+// at runtime; pushing them as static values would override the dynamic
+// behavior. VERCEL_OIDC_TOKEN, VERCEL_URL, VERCEL_ENV, etc. all qualify.
+const SKIPPED_PREFIXES = ["VERCEL_"];
+const skippedSystem = allKeys.filter((k) =>
+  SKIPPED_PREFIXES.some((p) => k.startsWith(p)),
+);
+const skippedEmpty = allKeys.filter(
+  (k) => localEnv[k] === "" && !skippedSystem.includes(k),
+);
+const keys = allKeys.filter(
+  (k) => localEnv[k] !== "" && !skippedSystem.includes(k),
+);
 
 if (allKeys.length === 0) {
   console.log("No keys parsed from .env.local — nothing to push");
   process.exit(0);
 }
-if (keys.length < allKeys.length) {
-  const empty = allKeys.length - keys.length;
-  console.log(`Skipping ${empty} key(s) with empty values.`);
+if (skippedEmpty.length > 0) {
+  console.log(`Skipping ${skippedEmpty.length} key(s) with empty values.`);
+}
+if (skippedSystem.length > 0) {
+  console.log(
+    `Skipping ${skippedSystem.length} Vercel-system key(s): ${skippedSystem.join(", ")}`,
+  );
 }
 
-// --- Get existing development env keys ---
+// --- Get existing development env keys via REST API ---
+// (vercel env ls --json isn't supported on every CLI version, so go direct.)
 console.log("Fetching existing Vercel development env...");
-let existingKeys = new Set();
-try {
-  const json = execSync("vercel env ls development --json", {
-    encoding: "utf8",
-  });
-  const parsed = JSON.parse(json);
-  const envs = Array.isArray(parsed) ? parsed : parsed.envs || [];
-  existingKeys = new Set(envs.map((e) => e.key));
-  console.log(`Found ${existingKeys.size} existing keys.\n`);
-} catch (err) {
-  console.error(
-    "Warning: could not fetch existing Vercel env list — will attempt all pushes.",
-  );
-  console.error(err.message);
-}
+const allEnvs =
+  (await vercelApi("GET", `/v10/projects/${projectId}/env`)).envs || [];
+const existingKeys = new Set(
+  allEnvs
+    .filter((e) => (e.target || []).includes("development"))
+    .map((e) => e.key),
+);
+const existingIdsByKey = new Map(
+  allEnvs
+    .filter((e) => (e.target || []).includes("development"))
+    .map((e) => [e.key, e.id]),
+);
+console.log(`Found ${existingKeys.size} existing keys.\n`);
 
 // --- Plan ---
 const toAdd = keys.filter((k) => !existingKeys.has(k));
@@ -175,22 +235,21 @@ if (!/^y(es)?$/i.test(answer.trim())) {
   process.exit(0);
 }
 
-// --- Execute ---
+// --- Execute via REST API ---
+// `vercel env add` is interactive and on this CLI version is also intercepted
+// by the Vercel Claude Code plugin, so use the API directly. POST to
+// /v10/projects/{id}/env with type=plain so values are readable later.
 async function vercelEnvAdd(key, value) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("vercel", ["env", "add", key, "development"], {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.stdin.write(value);
-    proc.stdin.end();
-    proc.on("exit", (code) =>
-      code === 0
-        ? resolve()
-        : reject(new Error(stderr.trim() || `exit ${code}`)),
-    );
+  await vercelApi("POST", `/v10/projects/${projectId}/env`, {
+    key,
+    value,
+    type: "plain",
+    target: ["development"],
   });
+}
+
+async function vercelEnvDelete(id) {
+  await vercelApi("DELETE", `/v10/projects/${projectId}/env/${id}`);
 }
 
 const targets = [...toAdd, ...replacing];
@@ -202,11 +261,8 @@ for (const key of targets) {
   const value = localEnv[key];
   try {
     if (wasExisting) {
-      try {
-        execSync(`vercel env rm ${key} development -y`, { stdio: "ignore" });
-      } catch {
-        /* ignore — proceed to add */
-      }
+      const id = existingIdsByKey.get(key);
+      if (id) await vercelEnvDelete(id);
     }
     await vercelEnvAdd(key, value);
     if (wasExisting) replaced++;

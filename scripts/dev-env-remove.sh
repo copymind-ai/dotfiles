@@ -60,10 +60,19 @@ if ! confirm "Proceed?" n; then
 fi
 
 # --- Remove from Vercel ---
+# `--yes` must come before positionals — otherwise Vercel CLI parses it as
+# the optional [gitbranch] arg and the interactive prompt silently aborts
+# with stdin closed. Piping `y` is a belt-and-suspenders safety net.
 for env in "${vercel_envs[@]}"; do
   if vercel_var_exists "$env" "$name"; then
-    vercel env rm "$name" "$env" -y >/dev/null 2>&1
-    printf "${GREEN}vercel${RESET}      removed %s from %s\n" "$name" "$env"
+    err_log="$(mktemp)"
+    if echo y | vercel env rm --yes "$name" "$env" >/dev/null 2>"$err_log"; then
+      printf "${GREEN}vercel${RESET}      removed %s from %s\n" "$name" "$env"
+    else
+      printf "${RED}vercel${RESET}      failed to remove %s from %s:\n" "$name" "$env" >&2
+      sed 's/^/    /' "$err_log" >&2
+    fi
+    rm -f "$err_log"
   else
     printf "${DIM}vercel${RESET}      skip %s (not set in %s)\n" "$name" "$env"
   fi

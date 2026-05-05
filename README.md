@@ -4,19 +4,19 @@ Team configuration files for local development.
 
 ## What's included
 
-| Tool                                                         | What it does                                            |
-| ------------------------------------------------------------ | ------------------------------------------------------- |
-| [Ghostty](https://ghostty.org/)                              | GPU-accelerated terminal emulator                       |
-| [Neovim](https://neovim.io/)                                 | Text editor, used as the primary IDE                    |
-| [tmux](https://github.com/tmux/tmux)                         | Terminal multiplexer — split panes, persistent sessions |
-| [Zsh](https://www.zsh.org/) + [Oh My Zsh](https://ohmyz.sh/) | Shell with plugins, themes, and better defaults         |
-| [Homebrew](https://brew.sh/)                                 | macOS package manager, installs everything above        |
-| [ripgrep](https://github.com/BurntSushi/ripgrep)             | Fast recursive code search, used by Neovim's Telescope  |
-| [TPM](https://github.com/tmux-plugins/tpm)                   | Tmux Plugin Manager, auto-installs tmux plugins         |
-| [Supabase CLI](https://supabase.com/docs/guides/cli)         | Local Supabase stack, required by `dev sb`              |
-| [Node.js](https://nodejs.org/)                               | Runtime for `pgflow`                                    |
+| Tool                                                         | What it does                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------- |
+| [Ghostty](https://ghostty.org/)                              | GPU-accelerated terminal emulator                             |
+| [Neovim](https://neovim.io/)                                 | Text editor, used as the primary IDE                          |
+| [tmux](https://github.com/tmux/tmux)                         | Terminal multiplexer — split panes, persistent sessions       |
+| [Zsh](https://www.zsh.org/) + [Oh My Zsh](https://ohmyz.sh/) | Shell with plugins, themes, and better defaults               |
+| [Homebrew](https://brew.sh/)                                 | macOS package manager, installs everything above              |
+| [ripgrep](https://github.com/BurntSushi/ripgrep)             | Fast recursive code search, used by Neovim's Telescope        |
+| [TPM](https://github.com/tmux-plugins/tpm)                   | Tmux Plugin Manager, auto-installs tmux plugins               |
+| [Supabase CLI](https://supabase.com/docs/guides/cli)         | Local Supabase stack, required by `dev sb`                    |
+| [Node.js](https://nodejs.org/)                               | Runtime for `pgflow`                                          |
 | [Corepack](https://github.com/nodejs/corepack)               | Provides pnpm/yarn shims pinned per-project (ships with Node) |
-| [pgflow](https://pgflow.dev/)                                | Flow compiler, required by `dev sb flow`                |
+| [pgflow](https://pgflow.dev/)                                | Flow compiler, required by `dev sb flow`                      |
 
 ## Structure
 
@@ -46,6 +46,13 @@ dotfiles/
 │   ├── dev-supabase-seed.sh
 │   ├── dev-supabase-reset.sh
 │   ├── dev-supabase-flow.sh
+│   ├── dev-env.sh                # Env-vars dispatcher
+│   ├── dev-env-add.sh
+│   ├── dev-env-remove.sh
+│   ├── dev-env-pull.sh
+│   ├── dev-env-push.mjs
+│   ├── dev-env-add-vercel.mjs    # REST API helper used by dev-env-add
+│   ├── dev-env-vercel-exists.mjs # REST API helper used by dev-helpers
 │   └── templates/                # File templates used by scripts above
 ├── tests/
 │   ├── unit/                     # Pure function tests
@@ -61,11 +68,12 @@ dotfiles/
 
 Unified entry point for development tools.
 
-| Command        | Alias    | Description                         |
-| -------------- | -------- | ----------------------------------- |
-| `dev session`  | `dev s`  | Tmux dev sessions                   |
-| `dev supabase` | `dev sb` | Shared local Supabase instance      |
-| `dev worktree` | `dev wt` | Git worktrees with Docker isolation |
+| Command        | Alias    | Description                                          |
+| -------------- | -------- | ---------------------------------------------------- |
+| `dev session`  | `dev s`  | Tmux dev sessions                                    |
+| `dev supabase` | `dev sb` | Shared local Supabase instance                       |
+| `dev worktree` | `dev wt` | Git worktrees with Docker isolation                  |
+| `dev env`      | `dev e`  | Env vars across `.env.example`, `.env.local`, Vercel |
 
 ### `dev s` — Session
 
@@ -94,14 +102,29 @@ All commands operate on the shared supabase worktree regardless of which worktre
 
 Must be run from inside a bare-cloned repo. Repo name and paths are detected automatically.
 
-| Command                | Description                                                        |
-| ---------------------- | ------------------------------------------------------------------ |
-| `dev wt init`          | Bootstrap first worktree + port registry from a fresh bare clone   |
-| `dev wt up <branch>`   | Create a git worktree with Docker isolation                        |
-| `dev wt down <branch>` | Tear down a git worktree and free the port                         |
-| `dev wt env`           | Set up .env.local for current worktree                             |
-| `dev wt port`          | Write docker-compose.override.yml from the port registry           |
-| `dev wt info`          | Show info about the current worktree                               |
+| Command                | Description                                                      |
+| ---------------------- | ---------------------------------------------------------------- |
+| `dev wt init`          | Bootstrap first worktree + port registry from a fresh bare clone |
+| `dev wt up <branch>`   | Create a git worktree with Docker isolation                      |
+| `dev wt down <branch>` | Tear down a git worktree and free the port                       |
+| `dev wt env`           | Set up .env.local for current worktree                           |
+| `dev wt port`          | Write docker-compose.override.yml from the port registry         |
+| `dev wt info`          | Show info about the current worktree                             |
+
+### `dev e` — Env vars
+
+Manages env vars across three places at once: `.env.example` (committed inventory, flat alphabetical), `.env.local` (gitignored cache), and Vercel (canonical store, all entries written as Plain Text/non-sensitive). Must be run from inside a Vercel-linked worktree.
+
+`--prod` targets `production` + `preview` on Vercel. `--dev` targets `development` only. Default (no flag) targets all three plus `.env.local`.
+
+| Command                             | Description                                                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `dev e add [--prod\|--dev] NAME`    | Insert into `.env.example`, prompt for value(s), push to selected Vercel envs as non-sensitive, mirror dev to `.env.local` |
+| `dev e remove [--prod\|--dev] NAME` | Remove from selected Vercel envs and `.env.local`. Full remove (no flag) also drops the line from `.env.example`           |
+| `dev e pull`                        | Replace `.env.local` with the development env from Vercel (flat alphabetical), backfill local-dev defaults, report drift   |
+| `dev e push [--force]`              | Bulk-upload `.env.local` to Vercel `development`. Skips existing keys unless `--force`. `VERCEL_*` keys are always skipped |
+
+`add` / `remove` / `pull` / `push` all talk to Vercel via the REST API, not the `vercel env` CLI — see `dev-env-add-vercel.mjs` and `dev-env-vercel-exists.mjs`. This bypasses Vercel CLI quirks like the un-skippable preview git-branch prompt (vercel/vercel#15763).
 
 ## Testing
 
