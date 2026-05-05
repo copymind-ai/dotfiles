@@ -45,6 +45,86 @@ upsert_env() {
   fi
 }
 
+# Update or insert a key=value pair in a flat .env file, keeping the file
+# sorted alphabetically by key (byte order, locale-independent). Strips any
+# existing line with the same key before inserting. Values with `=`, `/`,
+# `:`, etc. are written verbatim.
+upsert_env_sorted() {
+  local file="$1" key="$2" val="$3"
+  local tmp
+  tmp="$(mktemp)"
+  if [ -f "$file" ]; then
+    grep -v "^${key}=" "$file" 2>/dev/null > "$tmp" || true
+  fi
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  LC_ALL=C sort "$tmp" -o "$file"
+  rm -f "$tmp"
+}
+
+# Delete the `^<key>=` line from a flat .env file. No-op if absent.
+remove_env() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    grep -v "^${key}=" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  fi
+}
+
+# Read y/n from stdin. Returns 0 for yes, 1 for no.
+# Usage: confirm "Proceed?" [y|n]   (second arg is the default; defaults to n)
+confirm() {
+  local prompt="$1" default="${2:-n}" reply
+  local hint="[y/N]"
+  [ "$default" = "y" ] && hint="[Y/n]"
+  read -r -p "$prompt $hint " reply
+  reply="${reply:-$default}"
+  case "$reply" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Silent prompt; reads a value without echoing into the named variable.
+# Usage: prompt_secret target_var "Prompt: "
+prompt_secret() {
+  local __target="$1" __prompt="$2" __value
+  read -r -s -p "$__prompt" __value
+  echo
+  printf -v "$__target" '%s' "$__value"
+}
+
+# Verify the Vercel CLI is installed, the user logged in, and the given
+# repo root is linked. Errors with a clear hint per failure mode.
+vercel_check_auth() {
+  local repo_root="$1"
+  if ! command -v vercel >/dev/null 2>&1; then
+    echo "Error: vercel CLI not found. Install with: npm i -g vercel" >&2
+    exit 1
+  fi
+  if ! vercel whoami >/dev/null 2>&1; then
+    echo "Error: not logged in to Vercel. Run: vercel login" >&2
+    exit 1
+  fi
+  if [ ! -f "$repo_root/.vercel/project.json" ]; then
+    echo "Error: Vercel project not linked. Run: vercel link" >&2
+    echo "       (from $repo_root)" >&2
+    exit 1
+  fi
+}
+
+# Returns 0 if <name> is set in <env>, 1 otherwise. Requires `jq`.
+# <env> is one of: production, preview, development.
+# Tolerates both [{key:...}, ...] and {envs:[{key:...}, ...]} JSON shapes
+# across Vercel CLI versions.
+vercel_var_exists() {
+  local env="$1" name="$2"
+  vercel env ls "$env" --json 2>/dev/null \
+    | jq -e --arg k "$name" '
+        ( if type=="array" then . else (.envs // []) end )
+        | .[] | select(.key==$k)
+      ' >/dev/null 2>&1
+}
+
 # Generic retry wrapper for flaky operations. Backoff grows linearly:
 # 15s, 20s, 25s, 30s ... (10 + attempt * 5).
 #

@@ -82,4 +82,63 @@ OUTPUT=$(bash "$SCRIPTS_DIR/dev-worktree-down.sh" 2>&1) || EXIT_CODE=$?
 assert_exit_code "worktree-down requires branch" "1" "${EXIT_CODE:-0}"
 assert_contains "worktree-down error message" "branch name is required" "$OUTPUT"
 
+# ── dev-env.sh ───────────────────────────────────────────────────────
+
+header "dev.sh — lists env command"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev.sh" 2>&1) || EXIT_CODE=$?
+assert_contains "lists env" "env" "$OUTPUT"
+
+header "dev-env.sh — no args"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env.sh" 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "shows usage" "Usage: dev env" "$OUTPUT"
+assert_contains "lists add" "add" "$OUTPUT"
+assert_contains "lists remove" "remove" "$OUTPUT"
+assert_contains "lists pull" "pull" "$OUTPUT"
+assert_contains "lists push" "push" "$OUTPUT"
+
+header "dev-env.sh — unknown subcommand"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env.sh" nonsense 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "shows usage" "Usage: dev env" "$OUTPUT"
+
+# ── dev-env-add.sh validation ───────────────────────────────────────
+
+header "dev-env-add.sh — missing name"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "name required" "name is required" "$OUTPUT"
+
+header "dev-env-add.sh — lowercase name rejected"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" my_var 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "name regex error" "must match" "$OUTPUT"
+
+header "dev-env-add.sh — leading-digit name rejected"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" 1FOO 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "regex error for digits" "must match" "$OUTPUT"
+
+header "dev-env-add.sh — --prod and --dev mutually exclusive"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" --prod --dev FOO 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "mutually exclusive error" "mutually exclusive" "$OUTPUT"
+
+header "dev-env-add.sh — unknown flag rejected"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" --staging FOO 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "unknown flag error" "unknown flag" "$OUTPUT"
+
+# ── dev-env-remove.sh validation ────────────────────────────────────
+
+header "dev-env-remove.sh — missing name"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-remove.sh" 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "name required" "name is required" "$OUTPUT"
+
+header "dev-env-remove.sh — --prod and --dev mutually exclusive"
+OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-remove.sh" --prod --dev FOO 2>&1) || EXIT_CODE=$?
+assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
+assert_contains "mutually exclusive error" "mutually exclusive" "$OUTPUT"
+
 print_results
