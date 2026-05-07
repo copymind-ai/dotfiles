@@ -25,7 +25,7 @@ else
   git worktree add "$supabase_wt" --detach origin/main
 fi
 
-# Start Supabase if not running
+# Start Supabase if not running.
 if supabase_is_running; then
   echo "Supabase already running."
 else
@@ -34,8 +34,11 @@ else
   (cd "$supabase_wt" && supabase start)
 fi
 
-# Apply origin/main migrations
-apply_migrations "$supabase_wt"
+# Apply origin/main migrations. Don't abort on failure: a re-run can fail on
+# already-applied DDL (e.g. CREATE TRIGGER without IF NOT EXISTS) but the
+# stack is still usable; bailing here would skip env injection and leave
+# .env.local pointing at stale (often remote) values.
+apply_migrations "$supabase_wt" || echo "Warning: migrations reported errors (often safe to ignore on re-runs); continuing."
 
 # Inject env vars
 echo "Injecting Supabase env vars..."
