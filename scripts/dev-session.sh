@@ -32,9 +32,6 @@ tmux new-session -d -s "$SESSION" -n claude -c "$DIR"
 # Window 2: nvim
 tmux new-window -t "$SESSION" -n nvim -c "$DIR"
 
-# Window 3: docker
-tmux new-window -t "$SESSION" -n docker -c "$DIR"
-
 # Start on the first window
 tmux select-window -t "$SESSION:claude"
 
