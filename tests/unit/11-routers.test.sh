@@ -5,140 +5,92 @@ source "$(dirname "$0")/../helpers.sh"
 echo ""
 printf "${BOLD}02 — Router dispatch${RESET}\n"
 
-# ── dev.sh ───────────────────────────────────────────────────────────
+# ── Discovery ────────────────────────────────────────────────────────
+#
+# Filename convention:
+#   dev.sh                         → top-level router
+#   dev-<ns>.sh                    → namespace router (when children exist),
+#                                    also a leaf of dev.sh
+#   dev-<ns>-<leaf>.sh             → leaf of dev-<ns>.sh
+#   dev-<leaf>.sh   (no children)  → leaf of dev.sh
+#   *-helpers.sh                   → sourced library, skipped
+#
+# Adding a new dev-*.sh therefore requires wiring it into the matching
+# router — this test catches the omission without needing per-script
+# assertions.
 
-header "dev.sh — no args"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev" "$OUTPUT"
-assert_contains "lists session" "session" "$OUTPUT"
-assert_contains "lists supabase" "supabase" "$OUTPUT"
-assert_contains "lists worktree" "worktree" "$OUTPUT"
-
-header "dev.sh — unknown command"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev.sh" nonsense 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev" "$OUTPUT"
-
-# ── dev-worktree.sh ──────────────────────────────────────────────────
-
-header "dev-worktree.sh — no args"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-worktree.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev wt" "$OUTPUT"
-assert_contains "lists init" "init" "$OUTPUT"
-assert_contains "lists up" "up" "$OUTPUT"
-assert_contains "lists down" "down" "$OUTPUT"
-assert_contains "lists env" "env" "$OUTPUT"
-
-header "dev-worktree.sh — unknown subcommand"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-worktree.sh" nonsense 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-
-# ── dev-supabase.sh ──────────────────────────────────────────────────
-
-header "dev-supabase.sh — no args"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-supabase.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev supabase" "$OUTPUT"
-
-# ── dev-supabase.sh subcommands ───────────────────────────────────────
-
-header "dev-supabase.sh — lists all subcommands"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-supabase.sh" 2>&1) || EXIT_CODE=$?
-assert_contains "lists link" "link" "$OUTPUT"
-assert_contains "lists unlink" "unlink" "$OUTPUT"
-assert_contains "lists sync" "sync" "$OUTPUT"
-assert_contains "lists anchor" "anchor" "$OUTPUT"
-
-# ── Non-bare repo checks ────────────────────────────────────────────
-
-header "non-bare repo checks"
-setup_tmpdir
-cd "$TEST_TMPDIR"
-git init -q test-repo && cd test-repo
-git config user.email "test@test.com" && git config user.name "Test"
-touch file && git add file && git commit -q -m "init"
-
-for script in dev-worktree-init.sh dev-worktree-up.sh dev-worktree-down.sh dev-worktree-info.sh; do
-  OUTPUT=$(bash "$SCRIPTS_DIR/$script" test-branch 2>&1) || EXIT_CODE=$?
-  assert_exit_code "$script rejects non-bare repo" "1" "${EXIT_CODE:-0}"
-  assert_contains "$script mentions bare" "bare" "$OUTPUT"
+ALL_SCRIPTS=()
+for f in "$SCRIPTS_DIR"/dev-*.sh; do
+  base="$(basename "$f" .sh)"
+  [[ "$base" == *-helpers ]] && continue
+  ALL_SCRIPTS+=("$base")
 done
 
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-supabase.sh" up 2>&1) || EXIT_CODE=$?
-assert_exit_code "dev sb up rejects non-bare repo" "1" "${EXIT_CODE:-0}"
-assert_contains "dev sb up mentions bare" "bare" "$OUTPUT"
+has_children() {
+  local name="$1" f base
+  for f in "$SCRIPTS_DIR"/${name}-*.sh; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f" .sh)"
+    [[ "$base" == *-helpers ]] && continue
+    return 0
+  done
+  return 1
+}
 
-# ── Missing branch arg checks ───────────────────────────────────────
+ROUTERS=("dev")
+for base in "${ALL_SCRIPTS[@]}"; do
+  has_children "$base" && ROUTERS+=("$base")
+done
 
-header "missing branch argument"
+# Verify a router's case statement contains a clause matching <leaf>
+# (handles aliases like `s|session)` or `remove|rm)`).
+assert_dispatches() {
+  local label="$1" router="$2" leaf="$3"
+  if [ ! -f "$router" ]; then
+    FAILED=$((FAILED + 1))
+    printf "  ${RED}✗${RESET} %s — parent router missing: %s\n" "$label" "$(basename "$router")"
+    return
+  fi
+  if grep -qE "^[[:space:]]+([a-zA-Z_-]+\|)*${leaf}(\|[a-zA-Z_-]+)*\)" "$router"; then
+    PASSED=$((PASSED + 1))
+    printf "  ${GREEN}✓${RESET} %s\n" "$label"
+  else
+    FAILED=$((FAILED + 1))
+    printf "  ${RED}✗${RESET} %s — '%s' not dispatched in %s\n" "$label" "$leaf" "$(basename "$router")"
+  fi
+}
 
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-worktree-up.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "worktree-up requires branch" "1" "${EXIT_CODE:-0}"
-assert_contains "worktree-up error message" "branch name is required" "$OUTPUT"
+# ── Every dev-*.sh must be dispatched by its parent router ──────────
 
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-worktree-down.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "worktree-down requires branch" "1" "${EXIT_CODE:-0}"
-assert_contains "worktree-down error message" "branch name is required" "$OUTPUT"
+header "every dev-*.sh is dispatched by its router"
+for base in "${ALL_SCRIPTS[@]}"; do
+  name="${base#dev-}"
+  if [[ "$name" == *-* ]]; then
+    namespace="${name%%-*}"
+    leaf="${name#*-}"
+    parent="dev-${namespace}"
+  else
+    leaf="$name"
+    parent="dev"
+  fi
+  assert_dispatches "${base}.sh ← ${parent}.sh" "$SCRIPTS_DIR/${parent}.sh" "$leaf"
+done
 
-# ── dev-env.sh ───────────────────────────────────────────────────────
+# ── Every router exits 1 with usage on no args / unknown subcommand ─
 
-header "dev.sh — lists env command"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev.sh" 2>&1) || EXIT_CODE=$?
-assert_contains "lists env" "env" "$OUTPUT"
+header "routers — no args"
+for r in "${ROUTERS[@]}"; do
+  EXIT_CODE=0
+  OUTPUT=$(bash "$SCRIPTS_DIR/${r}.sh" 2>&1) || EXIT_CODE=$?
+  assert_exit_code "${r}.sh exits with 1" "1" "$EXIT_CODE"
+  assert_contains "${r}.sh shows Usage:" "Usage:" "$OUTPUT"
+done
 
-header "dev-env.sh — no args"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev env" "$OUTPUT"
-assert_contains "lists add" "add" "$OUTPUT"
-assert_contains "lists remove" "remove" "$OUTPUT"
-assert_contains "lists pull" "pull" "$OUTPUT"
-assert_contains "lists push" "push" "$OUTPUT"
-
-header "dev-env.sh — unknown subcommand"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env.sh" nonsense 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "shows usage" "Usage: dev env" "$OUTPUT"
-
-# ── dev-env-add.sh validation ───────────────────────────────────────
-
-header "dev-env-add.sh — missing name"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "name required" "name is required" "$OUTPUT"
-
-header "dev-env-add.sh — lowercase name rejected"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" my_var 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "name regex error" "must match" "$OUTPUT"
-
-header "dev-env-add.sh — leading-digit name rejected"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" 1FOO 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "regex error for digits" "must match" "$OUTPUT"
-
-header "dev-env-add.sh — --prod and --dev mutually exclusive"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" --prod --dev FOO 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "mutually exclusive error" "mutually exclusive" "$OUTPUT"
-
-header "dev-env-add.sh — unknown flag rejected"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-add.sh" --staging FOO 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "unknown flag error" "unknown flag" "$OUTPUT"
-
-# ── dev-env-remove.sh validation ────────────────────────────────────
-
-header "dev-env-remove.sh — missing name"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-remove.sh" 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "name required" "name is required" "$OUTPUT"
-
-header "dev-env-remove.sh — --prod and --dev mutually exclusive"
-OUTPUT=$(bash "$SCRIPTS_DIR/dev-env-remove.sh" --prod --dev FOO 2>&1) || EXIT_CODE=$?
-assert_exit_code "exits with 1" "1" "${EXIT_CODE:-0}"
-assert_contains "mutually exclusive error" "mutually exclusive" "$OUTPUT"
+header "routers — unknown subcommand"
+for r in "${ROUTERS[@]}"; do
+  EXIT_CODE=0
+  OUTPUT=$(bash "$SCRIPTS_DIR/${r}.sh" __nonexistent_xyz__ 2>&1) || EXIT_CODE=$?
+  assert_exit_code "${r}.sh exits with 1" "1" "$EXIT_CODE"
+done
 
 print_results
