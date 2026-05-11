@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-helpers.sh"
+source "$SCRIPT_DIR/dev.helpers.sh"
 
 # --- Parse args ---
 mode="all"
@@ -97,7 +97,7 @@ for env in "${vercel_envs[@]}"; do
   # All envs are added as plain (non-sensitive) so dev env pull can
   # round-trip values back into .env.local.
   if VAR_VALUE="$value" SENSITIVE="$sensitive_env" \
-       node "$SCRIPT_DIR/dev-env-add-vercel.mjs" "$name" "$env" 2>"$err_log"; then
+       node "$SCRIPT_DIR/dev-env-add-vercel.helpers.mjs" "$name" "$env" 2>"$err_log"; then
     printf "${GREEN}vercel${RESET}      added %s in %s\n" "$name" "$env"
     [ "$env" = "development" ] && dev_pushed=1
   else

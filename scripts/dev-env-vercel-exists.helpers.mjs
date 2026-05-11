@@ -4,7 +4,7 @@
 // --json (returns "unknown or unexpected option") and on others filters out
 // encrypted/sensitive entries — both make existence checks unreliable.
 //
-// Usage: dev-env-vercel-exists.mjs <NAME> <TARGET>
+// Usage: dev-env-vercel-exists.helpers.mjs <NAME> <TARGET>
 // Exit:  0 if exists in target, 1 if not, 2 on error.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -14,7 +14,7 @@ import path from "node:path";
 const [name, target] = process.argv.slice(2);
 
 if (!name || !target) {
-  console.error("Usage: dev-env-vercel-exists.mjs <NAME> <TARGET>");
+  console.error("Usage: dev-env-vercel-exists.helpers.mjs <NAME> <TARGET>");
   process.exit(2);
 }
 

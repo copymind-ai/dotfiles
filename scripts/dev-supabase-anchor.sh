@@ -24,7 +24,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-supabase-helpers.sh"
+source "$SCRIPT_DIR/dev-supabase.helpers.sh"
 
 require_bare_repo
 

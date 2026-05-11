@@ -3,7 +3,7 @@
 // `vercel env add`'s interactive prompts (the value prompt and the
 // preview-only "Add to which Git branch?" prompt — see vercel/vercel#15763).
 //
-// Usage: dev-env-add-vercel.mjs <NAME> <TARGET>
+// Usage: dev-env-add-vercel.helpers.mjs <NAME> <TARGET>
 //   - VAR_VALUE env var supplies the value (via env var so it doesn't
 //     appear in `ps` and isn't mangled by shell quoting).
 //   - SENSITIVE=1 marks the var as sensitive (default: plain/non-sensitive).
@@ -20,7 +20,7 @@ const value = process.env.VAR_VALUE;
 const sensitive = process.env.SENSITIVE === "1";
 
 if (!name || !target || value === undefined) {
-  console.error("Usage: dev-env-add-vercel.mjs <NAME> <TARGET>");
+  console.error("Usage: dev-env-add-vercel.helpers.mjs <NAME> <TARGET>");
   console.error("Requires VAR_VALUE env var.");
   process.exit(1);
 }

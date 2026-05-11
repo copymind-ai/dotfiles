@@ -13,7 +13,7 @@ printf "${BOLD}02 — Router dispatch${RESET}\n"
 #                                    also a leaf of dev.sh
 #   dev-<ns>-<leaf>.sh             → leaf of dev-<ns>.sh
 #   dev-<leaf>.sh   (no children)  → leaf of dev.sh
-#   *-helpers.sh                   → sourced library, skipped
+#   *.helpers.sh                   → sourced library, skipped
 #
 # Adding a new dev-*.sh therefore requires wiring it into the matching
 # router — this test catches the omission without needing per-script
@@ -22,7 +22,7 @@ printf "${BOLD}02 — Router dispatch${RESET}\n"
 ALL_SCRIPTS=()
 for f in "$SCRIPTS_DIR"/dev-*.sh; do
   base="$(basename "$f" .sh)"
-  [[ "$base" == *-helpers ]] && continue
+  [[ "$base" == *.helpers ]] && continue
   ALL_SCRIPTS+=("$base")
 done
 
@@ -31,7 +31,7 @@ has_children() {
   for f in "$SCRIPTS_DIR"/${name}-*.sh; do
     [[ -e "$f" ]] || continue
     base="$(basename "$f" .sh)"
-    [[ "$base" == *-helpers ]] && continue
+    [[ "$base" == *.helpers ]] && continue
     return 0
   done
   return 1

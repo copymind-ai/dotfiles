@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: get_latest_origin_timestamp${RESET}\n"
 
 _extract_fn() {
-  awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+  awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 }
 eval "$(_extract_fn get_latest_origin_timestamp)"
 

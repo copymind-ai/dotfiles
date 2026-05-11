@@ -7,7 +7,7 @@ printf "${BOLD}Unit: scaffold_pgflow_worker${RESET}\n"
 
 setup_tmpdir
 
-# Shadow `supabase` on PATH so sourcing dev-supabase-helpers.sh doesn't abort.
+# Shadow `supabase` on PATH so sourcing dev-supabase.helpers.sh doesn't abort.
 STUB_BIN="$TEST_TMPDIR/bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/supabase" <<'STUB'
@@ -18,7 +18,7 @@ chmod +x "$STUB_BIN/supabase"
 PATH="$STUB_BIN:$PATH"
 export PATH
 
-source "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+source "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 
 _make_flow_wt() {
   local wt="$1" kebab="$2" export_name="$3"

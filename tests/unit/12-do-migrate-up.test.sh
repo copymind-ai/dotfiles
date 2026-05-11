@@ -21,7 +21,7 @@ export PATH
 
 # Source the helper module. It unconditionally checks for a `supabase` binary
 # on PATH — our stub satisfies that.
-source "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+source "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 
 _make_fixture_wt() {
   local wt="$1"

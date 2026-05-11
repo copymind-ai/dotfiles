@@ -35,7 +35,6 @@ dotfiles/
 │   ├── dev-worktree-port.sh
 │   ├── dev-worktree-info.sh
 │   ├── dev-supabase.sh           # Supabase dispatcher
-│   ├── dev-supabase-helpers.sh   # Shared functions
 │   ├── dev-supabase-up.sh
 │   ├── dev-supabase-down.sh
 │   ├── dev-supabase-status.sh
@@ -46,13 +45,17 @@ dotfiles/
 │   ├── dev-supabase-seed.sh
 │   ├── dev-supabase-reset.sh
 │   ├── dev-supabase-flow.sh
+│   ├── dev-supabase-anchor.sh
 │   ├── dev-env.sh                # Env-vars dispatcher
 │   ├── dev-env-add.sh
 │   ├── dev-env-remove.sh
 │   ├── dev-env-pull.sh
 │   ├── dev-env-push.mjs
-│   ├── dev-env-add-vercel.mjs    # REST API helper used by dev-env-add
-│   ├── dev-env-vercel-exists.mjs # REST API helper used by dev-helpers
+│   ├── dev-nanoclaw.sh           # NanoClaw dispatcher
+│   ├── dev-nanoclaw-up.sh
+│   ├── dev-nanoclaw-down.sh
+│   ├── dev-update.sh             # Pull latest dotfiles changes
+│   ├── *.helpers.{sh,mjs}        # Sourced libraries (not callable)
 │   └── templates/                # File templates used by scripts above
 ├── tests/
 │   ├── unit/                     # Pure function tests
@@ -70,10 +73,12 @@ Unified entry point for development tools.
 
 | Command        | Alias    | Description                                          |
 | -------------- | -------- | ---------------------------------------------------- |
-| `dev session`  | `dev s`  | Tmux dev sessions                                    |
-| `dev supabase` | `dev sb` | Shared local Supabase instance                       |
-| `dev worktree` | `dev wt` | Git worktrees with Docker isolation                  |
-| `dev env`      | `dev e`  | Env vars across `.env.example`, `.env.local`, Vercel |
+| `dev session`  | `dev s`   | Tmux dev sessions                                    |
+| `dev supabase` | `dev sb`  | Shared local Supabase instance                       |
+| `dev worktree` | `dev wt`  | Git worktrees with Docker isolation                  |
+| `dev env`      | `dev e`   | Env vars across `.env.example`, `.env.local`, Vercel |
+| `dev nanoclaw` | `dev nc`  | Manage the NanoClaw host service via launchd        |
+| `dev update`   | `dev upd` | Pull latest dotfiles changes                         |
 
 ### `dev s` — Session
 
@@ -97,6 +102,7 @@ All commands operate on the shared supabase worktree regardless of which worktre
 | `dev sb seed`           | Apply pending seeds from `supabase/seeds/` (skips `users.sql`; tracked in `supabase_seeds.applied_seeds` — rename a seed to re-apply it) |
 | `dev sb reset`          | Full local reset: `db reset` → apply migrations → seed `users.sql` → apply seeds → background `functions serve`                          |
 | `dev sb flow [slug]`    | Compile pgflow flows from the invoking worktree and apply against the shared stack.                                                      |
+| `dev sb anchor`         | Point edge runtime's `COPYMIND_API_HOST` at this worktree's port                                                                         |
 
 ### `dev wt` — Worktree
 
@@ -124,7 +130,14 @@ Manages env vars across three places at once: `.env.example` (committed inventor
 | `dev e pull`                        | Replace `.env.local` with the development env from Vercel (flat alphabetical), backfill local-dev defaults, report drift   |
 | `dev e push [--force]`              | Bulk-upload `.env.local` to Vercel `development`. Skips existing keys unless `--force`. `VERCEL_*` keys are always skipped |
 
-`add` / `remove` / `pull` / `push` all talk to Vercel via the REST API, not the `vercel env` CLI — see `dev-env-add-vercel.mjs` and `dev-env-vercel-exists.mjs`. This bypasses Vercel CLI quirks like the un-skippable preview git-branch prompt (vercel/vercel#15763).
+`add` / `remove` / `pull` / `push` all talk to Vercel via the REST API, not the `vercel env` CLI — see `dev-env-add-vercel.helpers.mjs` and `dev-env-vercel-exists.helpers.mjs`. This bypasses Vercel CLI quirks like the un-skippable preview git-branch prompt (vercel/vercel#15763).
+
+### `dev nc` — NanoClaw
+
+| Command       | Description                                                      |
+| ------------- | ---------------------------------------------------------------- |
+| `dev nc up`   | Bootstrap NanoClaw via launchd (kickstarts a stale registration) |
+| `dev nc down` | Bootout NanoClaw via launchd                                     |
 
 ## Testing
 

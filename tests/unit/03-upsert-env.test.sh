@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: upsert_env${RESET}\n"
 
 # shellcheck disable=SC1091
-source "$SCRIPTS_DIR/dev-helpers.sh"
+source "$SCRIPTS_DIR/dev.helpers.sh"
 
 header "insert and update"
 setup_tmpdir

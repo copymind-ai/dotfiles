@@ -119,11 +119,11 @@ vercel_check_auth() {
 # The API is the only reliable source of truth.
 vercel_var_exists() {
   local env="$1" name="$2"
-  # Resolve script dir relative to this helpers file (dev-helpers.sh
+  # Resolve script dir relative to this helpers file (dev.helpers.sh
   # is sourced from sibling scripts; ${BASH_SOURCE[0]} points here).
   local helpers_dir
   helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  node "$helpers_dir/dev-env-vercel-exists.mjs" "$name" "$env" 2>/dev/null
+  node "$helpers_dir/dev-env-vercel-exists.helpers.mjs" "$name" "$env" 2>/dev/null
 }
 
 # Generic retry wrapper for flaky operations. Backoff grows linearly:
