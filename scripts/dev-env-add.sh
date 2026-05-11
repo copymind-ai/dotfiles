@@ -97,7 +97,7 @@ for env in "${vercel_envs[@]}"; do
   # All envs are added as plain (non-sensitive) so dev env pull can
   # round-trip values back into .env.local.
   if VAR_VALUE="$value" SENSITIVE="$sensitive_env" \
-       node "$SCRIPT_DIR/dev-env-add-vercel.helpers.mjs" "$name" "$env" 2>"$err_log"; then
+       node "$SCRIPT_DIR/dev-env.helpers.mjs" add "$name" "$env" 2>"$err_log"; then
     printf "${GREEN}vercel${RESET}      added %s in %s\n" "$name" "$env"
     [ "$env" = "development" ] && dev_pushed=1
   else

@@ -9,29 +9,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { resolveProject, vercelApi } from "./dev-env.helpers.mjs";
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
 
-// --- Resolve worktree root ---
-let root;
-try {
-  root = execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
-} catch {
-  console.error("Error: not inside a git worktree");
-  process.exit(1);
-}
-const localPath = path.join(root, ".env.local");
-if (!existsSync(path.join(root, ".env.example"))) {
-  console.error("Error: .env.example not found at worktree root");
-  process.exit(1);
-}
-if (!existsSync(localPath)) {
-  console.error(`Error: ${localPath} not found — nothing to push`);
-  process.exit(1);
-}
-
-// --- Verify Vercel auth & resolve project + token ---
+// --- Verify Vercel CLI is installed and authed (preflight) ---
+// resolveProject() / resolveAuth() will fail if the project isn't linked
+// or the auth file is missing, but these two checks give friendlier
+// messages for the CLI install / login cases.
 try {
   execSync("which vercel", { stdio: "ignore" });
 } catch {
@@ -44,55 +30,23 @@ try {
   console.error("Error: not logged in to Vercel. Run: vercel login");
   process.exit(1);
 }
-const projectFile = path.join(root, ".vercel/project.json");
-if (!existsSync(projectFile)) {
-  console.error(
-    `Error: Vercel project not linked. Run: vercel link (from ${root})`,
-  );
+
+// --- Resolve worktree root + project ---
+let root, projectId;
+try {
+  ({ root, projectId } = resolveProject());
+} catch (err) {
+  console.error(`Error: ${err.message}`);
   process.exit(1);
 }
-const project = JSON.parse(readFileSync(projectFile, "utf8"));
-const projectId = project.projectId;
-const teamId = project.orgId;
-
-const authCandidates = [
-  path.join(
-    process.env.HOME,
-    "Library/Application Support/com.vercel.cli/auth.json",
-  ),
-  path.join(process.env.HOME, ".local/share/com.vercel.cli/auth.json"),
-  path.join(process.env.HOME, ".config/com.vercel.cli/auth.json"),
-];
-const authPath = authCandidates.find((p) => existsSync(p));
-if (!authPath) {
-  console.error("Error: Vercel auth file not found. Run: vercel login");
+const localPath = path.join(root, ".env.local");
+if (!existsSync(path.join(root, ".env.example"))) {
+  console.error("Error: .env.example not found at worktree root");
   process.exit(1);
 }
-const apiToken = JSON.parse(readFileSync(authPath, "utf8")).token;
-const apiQuery = teamId ? `?teamId=${teamId}` : "";
-
-async function vercelApi(method, pathSuffix, body) {
-  const url = `https://api.vercel.com${pathSuffix}${pathSuffix.includes("?") ? "&" : apiQuery}`;
-  const init = {
-    method,
-    headers: { Authorization: `Bearer ${apiToken}` },
-  };
-  if (body !== undefined) {
-    init.headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-  const res = await fetch(url, init);
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = text;
-    try {
-      msg = JSON.parse(text)?.error?.message || text;
-    } catch {
-      /* keep raw */
-    }
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
-  return text ? JSON.parse(text) : {};
+if (!existsSync(localPath)) {
+  console.error(`Error: ${localPath} not found — nothing to push`);
+  process.exit(1);
 }
 
 // --- Parse .env.local ---

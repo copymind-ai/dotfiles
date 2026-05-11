@@ -123,7 +123,7 @@ vercel_var_exists() {
   # is sourced from sibling scripts; ${BASH_SOURCE[0]} points here).
   local helpers_dir
   helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  node "$helpers_dir/dev-env-vercel-exists.helpers.mjs" "$name" "$env" 2>/dev/null
+  node "$helpers_dir/dev-env.helpers.mjs" exists "$name" "$env" 2>/dev/null
 }
 
 # Generic retry wrapper for flaky operations. Backoff grows linearly:
