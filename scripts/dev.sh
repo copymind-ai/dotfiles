@@ -14,6 +14,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# --- Toolchain PATH for non-interactive (agent) shells ---
+# Agents (e.g. the devops bot) invoke `dev` from a non-interactive shell that
+# never sources the operator's login profile, so Homebrew/nvm bins are absent
+# and subcommands die on "npm/supabase/docker: command not found". Prepend the
+# standard locations (idempotent, only if present) and load nvm's default node.
+# Exported so the exec'd subcommand inherits it. Must never error under set -e.
+for __dir in /opt/homebrew/bin /usr/local/bin /Applications/Docker.app/Contents/Resources/bin; do
+  case ":$PATH:" in
+    *":$__dir:"*) : ;;
+    *) if [ -d "$__dir" ]; then PATH="$__dir:$PATH"; fi ;;
+  esac
+done
+export PATH
+unset __dir
+if ! command -v npm >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck disable=SC1091
+  . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true
+  nvm use default >/dev/null 2>&1 || true
+fi
+
 case "${1:-}" in
   s|session)
     shift
