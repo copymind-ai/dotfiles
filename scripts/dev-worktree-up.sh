@@ -110,6 +110,16 @@ echo "Registered in $REGISTRY"
 # --- Install dependencies ---
 echo "Installing dependencies..."
 cd "$NEW_WORKTREE_DIR"
+# Ensure the Node toolchain is on PATH. Agents (e.g. the devops bot) run this
+# script from a non-interactive shell that never sources nvm, so npm/pnpm/bun
+# are missing even though they resolve fine in an operator login shell.
+if ! command -v npm >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck disable=SC1091
+  . "$NVM_DIR/nvm.sh" || true
+  if [ -f .nvmrc ]; then nvm use >/dev/null 2>&1 || nvm use default >/dev/null 2>&1 || true
+  else nvm use default >/dev/null 2>&1 || true; fi
+fi
 if [ -f "package-lock.json" ]; then
   npm ci
 elif [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
