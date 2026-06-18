@@ -12,6 +12,24 @@ import { createInterface } from "node:readline";
 import { resolveProject, vercelApi } from "./dev-env.helpers.mjs";
 
 const args = process.argv.slice(2);
+
+if (args.includes("-h") || args.includes("--help")) {
+  process.stdout.write(
+    [
+      "Usage: dev env push [--force]",
+      "",
+      "Bulk-push entries from .env.local to Vercel's development environment.",
+      "Existing keys are skipped unless replaced.",
+      "",
+      "Flags:",
+      "  --force     Replace keys that already exist on Vercel (default: skip them)",
+      "  -h, --help  Show this help",
+      "",
+    ].join("\n"),
+  );
+  process.exit(0);
+}
+
 const force = args.includes("--force");
 
 // --- Verify Vercel CLI is installed and authed (preflight) ---

@@ -34,6 +34,8 @@ case "${1:-}" in
     echo "" >&2
     echo "Without flags on add/remove: targets all three Vercel envs (production + preview + development)." >&2
     echo "--prod targets production + preview. --dev targets development only." >&2
+    echo "" >&2
+    echo "Run 'dev env <command> --help' for a command's flags." >&2
     exit 1
     ;;
 esac

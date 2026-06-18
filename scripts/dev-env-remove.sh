@@ -8,21 +8,41 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/dev.helpers.sh"
 
+usage() {
+  cat <<'EOF'
+Usage: dev env remove [--prod | --dev] <NAME>
+
+Remove an env var from .env.example (full remove only), .env.local, and Vercel.
+
+Flags:
+  --prod      Remove from production + preview only (keeps .env.local & .env.example)
+  --dev       Remove from development only (also removes from .env.local; keeps .env.example)
+  -h, --help  Show this help
+
+With no flag: removes from all three Vercel envs (production + preview +
+development), .env.local, and .env.example.
+
+Arguments:
+  <NAME>      Variable name; must match ^[A-Z_][A-Z0-9_]*$ (e.g. MY_VAR)
+EOF
+}
+
 # --- Parse args ---
 mode="all"
 name=""
 for arg in "$@"; do
   case "$arg" in
+    -h|--help) usage; exit 0 ;;
     --prod) [ "$mode" = "all" ] && mode="prod" || { echo "Error: --prod and --dev are mutually exclusive" >&2; exit 1; } ;;
     --dev)  [ "$mode" = "all" ] && mode="dev"  || { echo "Error: --prod and --dev are mutually exclusive" >&2; exit 1; } ;;
-    -*) echo "Error: unknown flag: $arg" >&2; exit 1 ;;
+    -*) echo "Error: unknown flag: $arg" >&2; usage >&2; exit 1 ;;
     *)  [ -z "$name" ] && name="$arg" || { echo "Error: only one var name allowed" >&2; exit 1; } ;;
   esac
 done
 
 if [ -z "$name" ]; then
   echo "Error: variable name is required" >&2
-  echo "Usage: dev env remove [--prod | --dev] <NAME>" >&2
+  usage >&2
   exit 1
 fi
 

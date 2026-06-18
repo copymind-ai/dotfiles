@@ -30,10 +30,11 @@ Pure functions and routers — no Supabase, no worktree state needed.
 | --------------------------- | ------------------------------------------------------------------------------- |
 | `01-pure-functions`         | Sanitization, port alloc, upsert_env, classify_var, migration helpers           |
 | `02-routers`                | Command dispatch, usage output, non-bare repo checks, missing args              |
-| `12-do-migrate-up`          | Flatten/restore, db-port parsing, failure trap (stubbed `supabase`)             |
-| `13-do-seed-up`             | Seed registry, users.sql skip, idempotence, rename-as-new (stubbed `psql`)      |
-| `15-ensure-functions-serve` | Container/host split-brain detection, spawn vs no-op (stubbed `docker`/`pgrep`) |
-| `21-prompt-secret`          | Masked secret prompt: star cap at 20 + true count, bracketed-paste capture, multi-line (no truncation), backspace/Enter |
+| `12-help`                   | Every router prints a usage block and documents every subcommand it dispatches (auto-covers new commands)               |
+| `13-do-migrate-up`          | Flatten/restore, db-port parsing, failure trap (stubbed `supabase`)             |
+| `14-do-seed-up`             | Seed registry, users.sql skip, idempotence, rename-as-new (stubbed `psql`)      |
+| `16-ensure-functions-serve` | Container/host split-brain detection, spawn vs no-op (stubbed `docker`/`pgrep`) |
+| `22-prompt-secret`          | Masked secret prompt: star cap at 20 + true count, bracketed-paste capture, multi-line (no truncation), backspace/Enter |
 
 ### Integration (`tests/integration/`)
 
