@@ -36,6 +36,11 @@ export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 export PATH="$HOME/bin:$PATH"
 
+# android
+export ANDROID_HOME=$HOME/Library/Android/sdk
+export PATH=$PATH:$ANDROID_HOME/emulator
+export PATH=$PATH:$ANDROID_HOME/platform-tools
+
 # Dotfiles scripts — resolves root from .zshrc symlink
 DOTFILES_DIR="$(dirname $(readlink ~/.zshrc))/.."
 alias dev="$DOTFILES_DIR/scripts/dev.sh"
