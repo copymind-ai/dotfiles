@@ -33,6 +33,7 @@ Pure functions and routers — no Supabase, no worktree state needed.
 | `12-do-migrate-up`          | Flatten/restore, db-port parsing, failure trap (stubbed `supabase`)             |
 | `13-do-seed-up`             | Seed registry, users.sql skip, idempotence, rename-as-new (stubbed `psql`)      |
 | `15-ensure-functions-serve` | Container/host split-brain detection, spawn vs no-op (stubbed `docker`/`pgrep`) |
+| `21-prompt-secret`          | Masked secret prompt: star cap at 20 + true count, bracketed-paste capture, multi-line (no truncation), backspace/Enter |
 
 ### Integration (`tests/integration/`)
 
