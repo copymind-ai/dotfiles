@@ -91,18 +91,18 @@ confirm() {
 prompt_secret() {
   local __target="$1" __prompt="$2" __value="" __char __c2 __c3 __seq \
         __paste=0 __len __cap __stars __stty=""
-  printf '%s' "$__prompt" >&2
   if [ -t 0 ]; then
     __stty="$(stty -g)"
     # Restore the terminal on return OR interrupt: re-enable echo/line mode
     # and turn bracketed paste back off, so we never leave the shell wedged.
     trap 'stty "$__stty" 2>/dev/null; printf "\033[?2004l" >&2' RETURN
-    # Raw mode (no echo, no line buffering) + bracketed paste. With paste
-    # bracketing on, the terminal wraps a Cmd+V paste in ESC[200~ … ESC[201~
-    # so we can treat the whole paste as one atomic chunk.
+    # Raw mode before the prompt so the terminal never echoes paste content.
+    # (If the shell already had bracketed paste on, pasting between the printf
+    # and stty -echo would leak ^[[200~…^[[201~ as visible text.)
     stty -echo -icanon
     printf '\033[?2004h' >&2
   fi
+  printf '%s' "$__prompt" >&2
   # -N 1 reads exactly one byte (delimiters aren't special), so newlines that
   # are part of a paste come through as content rather than ending the read.
   while IFS= read -r -s -N 1 __char; do
