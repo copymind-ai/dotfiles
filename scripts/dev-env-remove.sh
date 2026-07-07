@@ -53,8 +53,8 @@ fi
 
 # --- Resolve worktree root ---
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ] || [ ! -f "$ROOT/.env.example" ]; then
-  echo "Error: must be run inside a worktree containing .env.example" >&2
+if [ -z "$ROOT" ]; then
+  echo "Error: must be run inside a git repository" >&2
   exit 1
 fi
 

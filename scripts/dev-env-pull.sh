@@ -11,8 +11,8 @@ source "$SCRIPT_DIR/dev.helpers.sh"
 
 # --- Resolve worktree root ---
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ] || [ ! -f "$ROOT/.env.example" ]; then
-  echo "Error: must be run inside a worktree containing .env.example" >&2
+if [ -z "$ROOT" ]; then
+  echo "Error: must be run inside a git repository" >&2
   exit 1
 fi
 
@@ -40,6 +40,14 @@ grep -E '^[A-Z_][A-Z0-9_]*=' "$tmp" | LC_ALL=C sort > "$ROOT/.env.local"
 
 count=$(wc -l < "$ROOT/.env.local" | tr -d ' ')
 printf "${GREEN}Pulled %s vars${RESET} from Vercel (development) into %s/.env.local\n" "$count" "$ROOT"
+
+# Backfill + cross-check both depend on .env.example. Skip them cleanly when
+# the repo doesn't keep one (the pull itself already succeeded above).
+if [ ! -f "$ROOT/.env.example" ]; then
+  echo ""
+  printf "${DIM}No .env.example — skipping backfill and cross-check.${RESET}\n"
+  exit 0
+fi
 
 # --- Backfill local-only defaults from .env.example ---
 # For keys in .env.example with a non-empty default value (e.g. NODE_ENV=development),

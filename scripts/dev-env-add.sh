@@ -54,12 +54,19 @@ fi
 
 # --- Resolve worktree root ---
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ] || [ ! -f "$ROOT/.env.example" ]; then
-  echo "Error: must be run inside a worktree containing .env.example" >&2
+if [ -z "$ROOT" ]; then
+  echo "Error: must be run inside a git repository" >&2
   exit 1
 fi
 
 vercel_check_auth "$ROOT"
+
+# `add` manages .env.example — bootstrap it if this repo doesn't have one yet.
+# Done after the auth/link check so an aborted run leaves no stray file.
+if [ ! -f "$ROOT/.env.example" ]; then
+  touch "$ROOT/.env.example"
+  printf "${DIM}created .env.example${RESET}\n"
+fi
 
 # --- Determine targets ---
 case "$mode" in

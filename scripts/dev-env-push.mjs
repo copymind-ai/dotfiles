@@ -58,10 +58,6 @@ try {
   process.exit(1);
 }
 const localPath = path.join(root, ".env.local");
-if (!existsSync(path.join(root, ".env.example"))) {
-  console.error("Error: .env.example not found at worktree root");
-  process.exit(1);
-}
 if (!existsSync(localPath)) {
   console.error(`Error: ${localPath} not found — nothing to push`);
   process.exit(1);
