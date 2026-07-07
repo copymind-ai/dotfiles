@@ -1,5 +1,5 @@
 services:
-  app:
+  __SERVICE_NAME__:
     container_name: __CONTAINER_NAME__
     ports: !override
       - "__PORT__:3000"
