@@ -66,7 +66,13 @@ fi
 # --- Remove worktree ---
 echo "Removing git worktree..."
 cd "$CURRENT_WORKTREE"
-git worktree remove "$TARGET_DIR" --force
+if ! git worktree remove "$TARGET_DIR" --force; then
+  # Orphaned checkout: admin metadata under <bare>/worktrees/ is gone
+  # (e.g. after a prune), so git no longer recognizes the directory.
+  echo "Worktree metadata missing; removing directory manually..."
+  rm -rf "$TARGET_DIR"
+  git worktree prune
+fi
 
 # --- Delete the branch ---
 git branch -D "$BRANCH_NAME" 2>/dev/null || echo "Branch already deleted or not found"
