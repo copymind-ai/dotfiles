@@ -66,10 +66,11 @@ fi
 # --- Remove worktree ---
 echo "Removing git worktree..."
 cd "$CURRENT_WORKTREE"
-if ! git worktree remove "$TARGET_DIR" --force; then
-  # Orphaned checkout: admin metadata under <bare>/worktrees/ is gone
-  # (e.g. after a prune), so git no longer recognizes the directory.
-  echo "Worktree metadata missing; removing directory manually..."
+# git refuses in a few recoverable cases: admin metadata under
+# <bare>/worktrees/ was pruned, or leftover untracked files (e.g. created
+# by Docker) make the directory "not empty". rm -rf + prune handles both.
+if ! git worktree remove "$TARGET_DIR" --force 2>/dev/null; then
+  echo "git worktree remove refused; removing directory manually..."
   rm -rf "$TARGET_DIR"
   git worktree prune
 fi
