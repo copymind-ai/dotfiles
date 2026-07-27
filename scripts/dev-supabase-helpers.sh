@@ -357,14 +357,22 @@ do_migrate_up() {
     local split="${rel}_split"
     local flat="${rel}_flat"
 
+    # Only subdirs that actually hold .sql files count as project dirs —
+    # tool bookkeeping dirs (e.g. drizzle-kit's meta/, json-only) must not
+    # trigger the flatten.
     local has_subdirs=false
-    local entry
+    local entry f
     for entry in "$rel"/*/; do
-      [ -d "$entry" ] && { has_subdirs=true; break; }
+      [ -d "$entry" ] || continue
+      for f in "$entry"*.sql; do
+        [ -e "$f" ] && { has_subdirs=true; break 2; }
+      done
     done
 
     if [ "$has_subdirs" = true ]; then
       mkdir -p "$flat"
+      # Root-level migrations must survive the flatten alongside subdir ones.
+      cp "$rel"/*.sql "$flat/" 2>/dev/null || true
       local project_dir
       for project_dir in "$rel"/*/; do
         cp "$project_dir"*.sql "$flat/" 2>/dev/null || true
