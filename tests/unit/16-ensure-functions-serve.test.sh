@@ -29,7 +29,7 @@ cat > "$SB_WT/supabase/config.toml" <<'TOML'
 project_id = "test-unit"
 TOML
 
-source "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+source "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 
 # Replace the spawn with a no-op that records invocations into a file.
 # We redefine after sourcing so the real function is overridden without

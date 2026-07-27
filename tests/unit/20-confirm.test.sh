@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: confirm${RESET}\n"
 
 # shellcheck disable=SC1091
-source "$SCRIPTS_DIR/dev-helpers.sh"
+source "$SCRIPTS_DIR/dev.helpers.sh"
 
 # Run confirm with stdin piped from a string. Echo the resulting exit code.
 # Wrapping in a function isolates `confirm`'s `read` and side-channels the

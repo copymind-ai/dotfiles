@@ -39,9 +39,32 @@ if [ ! -f "$TEMPLATE" ]; then
   exit 1
 fi
 
+# --- Detect the service name from docker-compose.yml ---
+# The override must target the SAME service defined in the base compose file;
+# hardcoding a name (e.g. "app") makes Compose treat the override as a new,
+# build-less service → "neither an image nor a build context" errors. Grab the
+# first service key under `services:` (the app service, by convention first).
+COMPOSE_FILE="$WORKTREE_DIR/docker-compose.yml"
+if [ ! -f "$COMPOSE_FILE" ]; then
+  echo "Error: docker-compose.yml not found at $COMPOSE_FILE" >&2
+  exit 1
+fi
+SERVICE_NAME="$(awk '
+  /^services:[[:space:]]*$/ { in_s=1; next }
+  in_s && /^[^[:space:]#]/  { exit }               # dedented to top level → stop
+  in_s && /^[[:space:]]+[A-Za-z0-9._-]+:/ {
+    gsub(/[[:space:]:]/, ""); print; exit
+  }
+' "$COMPOSE_FILE")"
+if [ -z "$SERVICE_NAME" ]; then
+  echo "Error: Could not detect a service name in $COMPOSE_FILE" >&2
+  exit 1
+fi
+
 # --- Render template ---
 CONTAINER_NAME="${REPO_NAME}-${WORKTREE_NAME}"
 sed \
+  -e "s|__SERVICE_NAME__|${SERVICE_NAME}|g" \
   -e "s|__CONTAINER_NAME__|${CONTAINER_NAME}|g" \
   -e "s|__PORT__|${PORT}|g" \
   "$TEMPLATE" > "$OVERRIDE_FILE"

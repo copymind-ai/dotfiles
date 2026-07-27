@@ -4,7 +4,7 @@
 # Side-effect-free utilities (upsert_env, etc.). Sourced first so the
 # functions are available even if the supabase CLI check below aborts.
 # shellcheck disable=SC1091
-source "$(dirname "${BASH_SOURCE[0]}")/dev-helpers.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/dev.helpers.sh"
 
 # --- Require supabase CLI ---
 if ! command -v supabase &>/dev/null; then

@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: dev sb sync [--reset]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/dev-supabase-helpers.sh"
+source "$SCRIPT_DIR/dev-supabase.helpers.sh"
 
 require_bare_repo
 

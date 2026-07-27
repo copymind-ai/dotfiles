@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: remove_env${RESET}\n"
 
 # shellcheck disable=SC1091
-source "$SCRIPTS_DIR/dev-helpers.sh"
+source "$SCRIPTS_DIR/dev.helpers.sh"
 
 header "removes existing line, keeps others"
 setup_tmpdir

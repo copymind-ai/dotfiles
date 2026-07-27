@@ -84,12 +84,62 @@ confirm() {
   esac
 }
 
-# Silent prompt; reads a value without echoing into the named variable.
+# Masked prompt; reads a value without revealing it, echoing a row of
+# asterisks (capped at 20) plus a live character count as feedback.
 # Usage: prompt_secret target_var "Prompt: "
+# e.g. while typing/pasting "hunter2" the user sees:  ******* (7 chars)
 prompt_secret() {
-  local __target="$1" __prompt="$2" __value
-  read -r -s -p "$__prompt" __value
-  echo
+  local __target="$1" __prompt="$2" __value="" __char __c2 __c3 __seq \
+        __paste=0 __len __cap __stars __stty=""
+  if [ -t 0 ]; then
+    __stty="$(stty -g)"
+    # Restore the terminal on return OR interrupt: re-enable echo/line mode
+    # and turn bracketed paste back off, so we never leave the shell wedged.
+    trap 'stty "$__stty" 2>/dev/null; printf "\033[?2004l" >&2' RETURN
+    # Raw mode before the prompt so the terminal never echoes paste content.
+    # (If the shell already had bracketed paste on, pasting between the printf
+    # and stty -echo would leak ^[[200~…^[[201~ as visible text.)
+    stty -echo -icanon
+    printf '\033[?2004h' >&2
+  fi
+  printf '%s' "$__prompt" >&2
+  # -N 1 reads exactly one byte (delimiters aren't special), so newlines that
+  # are part of a paste come through as content rather than ending the read.
+  while IFS= read -r -s -N 1 __char; do
+    if [ "$__char" = $'\033' ]; then
+      # Possible CSI sequence. Bracketed-paste markers are ESC[200~ (start)
+      # and ESC[201~ (end); other escapes (arrows, etc.) are consumed+ignored.
+      IFS= read -r -s -N 1 __c2 || true
+      if [ "$__c2" = '[' ]; then
+        __seq=''
+        while IFS= read -r -s -N 1 __c3; do
+          case "$__c3" in [0-9\;]) __seq+="$__c3" ;; *) break ;; esac
+        done
+        if [ "$__seq" = 200 ]; then __paste=1; continue; fi   # paste begins
+        if [ "$__seq" = 201 ]; then __paste=0; else continue; fi  # 201 → render
+      else
+        continue
+      fi
+    elif [ "$__paste" = 1 ]; then
+      __value+="$__char"   # inside a paste: literal content, render only at end
+      continue
+    else
+      case "$__char" in
+        $'\n'|$'\r')   break ;;                    # Enter submits
+        $'\177'|$'\b') __value="${__value%?}" ;;   # backspace / delete
+        *)             __value+="$__char" ;;        # typed character
+      esac
+    fi
+    # Reached after a paste ends (ESC[201~) or after a single keystroke:
+    # repaint the masked line — stars capped at 20, true count in brackets.
+    __len=${#__value}
+    __cap=$__len
+    (( __cap > 20 )) && __cap=20
+    __stars="$(printf '%*s' "$__cap" '')"
+    __stars="${__stars// /\*}"
+    printf '\r\033[K%s%s (%d chars)' "$__prompt" "$__stars" "$__len" >&2
+  done
+  printf '\n' >&2
   printf -v "$__target" '%s' "$__value"
 }
 
@@ -119,11 +169,11 @@ vercel_check_auth() {
 # The API is the only reliable source of truth.
 vercel_var_exists() {
   local env="$1" name="$2"
-  # Resolve script dir relative to this helpers file (dev-helpers.sh
+  # Resolve script dir relative to this helpers file (dev.helpers.sh
   # is sourced from sibling scripts; ${BASH_SOURCE[0]} points here).
   local helpers_dir
   helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  node "$helpers_dir/dev-env-vercel-exists.mjs" "$name" "$env" 2>/dev/null
+  node "$helpers_dir/dev-env.helpers.mjs" exists "$name" "$env" 2>/dev/null
 }
 
 # Generic retry wrapper for flaky operations. Backoff grows linearly:

@@ -9,6 +9,7 @@ set -euo pipefail
 #   sb,  supabase   Shared local Supabase instance
 #   wt,  worktree   Git worktrees with Docker isolation
 #   e,   env        Manage env vars across .env.example, .env.local, Vercel
+#   nc,  nanoclaw   Manage the NanoClaw host service via launchd
 #   upd, update     Pull latest dotfiles changes
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +31,10 @@ case "${1:-}" in
     shift
     exec "$SCRIPT_DIR/dev-env.sh" "$@"
     ;;
+  nc|nanoclaw)
+    shift
+    exec "$SCRIPT_DIR/dev-nanoclaw.sh" "$@"
+    ;;
   upd|update)
     shift
     exec "$SCRIPT_DIR/dev-update.sh" "$@"
@@ -42,6 +47,7 @@ case "${1:-}" in
     echo "  sb,  supabase   Shared local Supabase instance" >&2
     echo "  wt,  worktree   Git worktrees with Docker isolation" >&2
     echo "  e,   env        Manage env vars across .env.example, .env.local, Vercel" >&2
+    echo "  nc,  nanoclaw   Manage the NanoClaw host service via launchd" >&2
     echo "  upd, update     Pull latest dotfiles changes" >&2
     echo "" >&2
     echo "Run 'dev <command>' to see subcommands." >&2

@@ -17,7 +17,7 @@ fi
 BRANCH_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-helpers.sh"
+source "$SCRIPT_DIR/dev.helpers.sh"
 
 require_bare_repo
 

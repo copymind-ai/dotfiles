@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: upsert_env_sorted${RESET}\n"
 
 # shellcheck disable=SC1091
-source "$SCRIPTS_DIR/dev-helpers.sh"
+source "$SCRIPTS_DIR/dev.helpers.sh"
 
 header "alphabetical insertion into empty file"
 setup_tmpdir

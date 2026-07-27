@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: dev sb down [--force]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/dev-supabase-helpers.sh"
+source "$SCRIPT_DIR/dev-supabase.helpers.sh"
 
 if ! supabase_is_running; then
   echo "Supabase is not running."

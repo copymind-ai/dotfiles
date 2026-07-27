@@ -17,7 +17,7 @@ fi
 BRANCH_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-helpers.sh"
+source "$SCRIPT_DIR/dev.helpers.sh"
 
 require_bare_repo
 
@@ -57,7 +57,7 @@ docker builder prune -f 2>/dev/null || true
 # --- Clean up migration symlinks ---
 if [ -f "$TARGET_DIR/supabase/config.toml" ]; then
   echo "Cleaning up migration symlinks..."
-  source "$SCRIPT_DIR/dev-supabase-helpers.sh"
+  source "$SCRIPT_DIR/dev-supabase.helpers.sh"
   unlink_worktree_migrations "$TARGET_DIR" || true
   echo "Note: Shared Supabase instance left running (used by other worktrees)."
   echo "  To stop: dev sb down"
@@ -66,7 +66,14 @@ fi
 # --- Remove worktree ---
 echo "Removing git worktree..."
 cd "$CURRENT_WORKTREE"
-git worktree remove "$TARGET_DIR" --force
+# git refuses in a few recoverable cases: admin metadata under
+# <bare>/worktrees/ was pruned, or leftover untracked files (e.g. created
+# by Docker) make the directory "not empty". rm -rf + prune handles both.
+if ! git worktree remove "$TARGET_DIR" --force 2>/dev/null; then
+  echo "git worktree remove refused; removing directory manually..."
+  rm -rf "$TARGET_DIR"
+  git worktree prune
+fi
 
 # --- Delete the branch ---
 git branch -D "$BRANCH_NAME" 2>/dev/null || echo "Branch already deleted or not found"

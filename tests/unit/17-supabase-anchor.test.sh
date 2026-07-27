@@ -8,7 +8,7 @@ printf "${BOLD}Unit: dev sb anchor${RESET}\n"
 setup_tmpdir
 
 # ── Stub external binaries ────────────────────────────────────────────
-# `supabase` is required during dev-supabase-helpers.sh sourcing (top-level
+# `supabase` is required during dev-supabase.helpers.sh sourcing (top-level
 # `command -v` check). `docker` is invoked transitively by
 # ensure_functions_serve (`docker ps --filter ...`).
 #

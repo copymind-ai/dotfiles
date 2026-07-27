@@ -6,23 +6,44 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-helpers.sh"
+source "$SCRIPT_DIR/dev.helpers.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: dev env add [--prod | --dev] <NAME>
+
+Add an env var to .env.example, .env.local, and Vercel, prompting for the
+value(s) with masked input.
+
+Flags:
+  --prod      Target production + preview only (leaves .env.local untouched)
+  --dev       Target development only (mirrors the value into .env.local)
+  -h, --help  Show this help
+
+With no flag: targets all three Vercel envs (production + preview +
+development) and mirrors the development value into .env.local.
+
+Arguments:
+  <NAME>      Variable name; must match ^[A-Z_][A-Z0-9_]*$ (e.g. MY_VAR)
+EOF
+}
 
 # --- Parse args ---
 mode="all"
 name=""
 for arg in "$@"; do
   case "$arg" in
+    -h|--help) usage; exit 0 ;;
     --prod) [ "$mode" = "all" ] && mode="prod" || { echo "Error: --prod and --dev are mutually exclusive" >&2; exit 1; } ;;
     --dev)  [ "$mode" = "all" ] && mode="dev"  || { echo "Error: --prod and --dev are mutually exclusive" >&2; exit 1; } ;;
-    -*) echo "Error: unknown flag: $arg" >&2; exit 1 ;;
+    -*) echo "Error: unknown flag: $arg" >&2; usage >&2; exit 1 ;;
     *)  [ -z "$name" ] && name="$arg" || { echo "Error: only one var name allowed" >&2; exit 1; } ;;
   esac
 done
 
 if [ -z "$name" ]; then
   echo "Error: variable name is required" >&2
-  echo "Usage: dev env add [--prod | --dev] <NAME>" >&2
+  usage >&2
   exit 1
 fi
 
@@ -33,12 +54,19 @@ fi
 
 # --- Resolve worktree root ---
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ] || [ ! -f "$ROOT/.env.example" ]; then
-  echo "Error: must be run inside a worktree containing .env.example" >&2
+if [ -z "$ROOT" ]; then
+  echo "Error: must be run inside a git repository" >&2
   exit 1
 fi
 
 vercel_check_auth "$ROOT"
+
+# `add` manages .env.example — bootstrap it if this repo doesn't have one yet.
+# Done after the auth/link check so an aborted run leaves no stray file.
+if [ ! -f "$ROOT/.env.example" ]; then
+  touch "$ROOT/.env.example"
+  printf "${DIM}created .env.example${RESET}\n"
+fi
 
 # --- Determine targets ---
 case "$mode" in
@@ -97,7 +125,7 @@ for env in "${vercel_envs[@]}"; do
   # All envs are added as plain (non-sensitive) so dev env pull can
   # round-trip values back into .env.local.
   if VAR_VALUE="$value" SENSITIVE="$sensitive_env" \
-       node "$SCRIPT_DIR/dev-env-add-vercel.mjs" "$name" "$env" 2>"$err_log"; then
+       node "$SCRIPT_DIR/dev-env.helpers.mjs" add "$name" "$env" 2>"$err_log"; then
     printf "${GREEN}vercel${RESET}      added %s in %s\n" "$name" "$env"
     [ "$env" = "development" ] && dev_pushed=1
   else

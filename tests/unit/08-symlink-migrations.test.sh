@@ -6,7 +6,7 @@ echo ""
 printf "${BOLD}Unit: symlink_migrations${RESET}\n"
 
 _extract_fn() {
-  awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+  awk "/^${1}\\(\\)/{found=1} found{print} found && /^\\}/{exit}" "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 }
 eval "$(_extract_fn symlink_migrations)"
 

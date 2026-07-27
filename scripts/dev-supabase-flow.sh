@@ -19,7 +19,7 @@ set -euo pipefail
 #     (the previous script short-circuited in that case).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/dev-supabase-helpers.sh"
+source "$SCRIPT_DIR/dev-supabase.helpers.sh"
 
 require_bare_repo
 

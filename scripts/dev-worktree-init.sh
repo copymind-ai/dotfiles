@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/dev-helpers.sh"
+source "$SCRIPT_DIR/dev.helpers.sh"
 
 # --- Bare repo check ---
 # Custom "not a git repo" message comes first; require_bare_repo's own

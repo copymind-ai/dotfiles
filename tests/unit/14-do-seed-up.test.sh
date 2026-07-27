@@ -74,7 +74,7 @@ chmod +x "$STUB_BIN/supabase"
 PATH="$STUB_BIN:$PATH"
 export PATH
 
-source "$SCRIPTS_DIR/dev-supabase-helpers.sh"
+source "$SCRIPTS_DIR/dev-supabase.helpers.sh"
 
 _make_fixture_wt() {
   local wt="$1"
