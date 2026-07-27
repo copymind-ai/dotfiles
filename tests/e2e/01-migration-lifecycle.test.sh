@@ -54,6 +54,41 @@ assert_contains "symlinked beta" "Symlinked 1 migration" "$OUTPUT"
 assert_symlink_count "3 symlinks total" "3" "$WORKTREE_BASE/supabase/supabase/migrations"
 assert "beta table in DB" db_table_exists "test_beta"
 
+# ── Stale symlink left by a sibling worktree ─────────────────────────
+#
+# Regression: feat-beta squashes/rebases away a migration it had already
+# linked and applied. Its symlink in the supabase worktree now dangles while
+# the history row survives — and `supabase migration up` then refuses to run
+# at all (LegacyMigrationMissingLocalError) for EVERY worktree sharing the
+# stack, including ones that changed nothing. `dev sb link` must clear the
+# stale link AND its history row before applying, or it can never recover:
+# the apply aborts first, so a cleanup placed after it never runs.
+
+header "stale symlink from a sibling worktree does not wedge the stack"
+rm "$WORKTREE_BASE/feat-beta/supabase/migrations/app/20260418000003_test_beta.sql"
+assert "precondition: history still has the squashed version" db_version_exists "20260418000003"
+assert "precondition: symlink now dangles" test ! -e \
+  "$WORKTREE_BASE/supabase/supabase/migrations/app/20260418000003_test_beta.sql"
+
+cd "$WORKTREE_BASE/feat-alpha"
+OUTPUT=$("$SCRIPTS_DIR/dev-supabase-link.sh" 2>&1) || true
+assert_not_contains "migration up not wedged" "LegacyMigrationMissingLocalError" "$OUTPUT"
+assert_contains "stale link removed" "Removed 1 stale symlink" "$OUTPUT"
+assert_contains "history repaired" "Repairing migration history" "$OUTPUT"
+assert "squashed version dropped from history" db_version_not_exists "20260418000003"
+assert "sibling's migrations survive" db_version_exists "20260418000001"
+assert "alpha table still present" db_table_exists "test_alpha_2"
+assert_symlink_count "2 symlinks remain" "2" "$WORKTREE_BASE/supabase/supabase/migrations"
+
+# Restore beta so the ordered cases below see the state they expect.
+cd "$WORKTREE_BASE/feat-beta"
+cat > supabase/migrations/app/20260418000003_test_beta.sql << 'SQL'
+CREATE TABLE IF NOT EXISTS public.test_beta (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+SQL
+"$SCRIPTS_DIR/dev-supabase-link.sh" >/dev/null 2>&1 || true
+assert_symlink_count "3 symlinks restored" "3" "$WORKTREE_BASE/supabase/supabase/migrations"
+assert "beta version re-applied" db_version_exists "20260418000003"
+
 # ── Timestamp conflict ───────────────────────────────────────────────
 
 header "timestamp conflict detection"

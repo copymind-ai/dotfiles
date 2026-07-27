@@ -253,11 +253,52 @@ remove_wt_symlinks() {
   fi
 }
 
+# `20260726091727_updated_at_triggers.sql` -> `20260726091727`.
+migration_version_of() {
+  local base
+  base="$(basename "$1")"
+  echo "${base%%_*}"
+}
+
+# Drop history rows for migrations whose .sql file is no longer on disk.
+#
+# The Supabase CLI refuses to run at all (LegacyMigrationMissingLocalError)
+# when supabase_migrations.schema_migrations references a version it cannot
+# find locally. EVERY path that removes migration files must therefore repair
+# history in the same breath — otherwise the next `migration up` fails for
+# every worktree sharing the stack, and the evidence needed to know WHICH
+# versions to repair (the symlinks) is already gone.
+#
+# Usage: repair_migration_history <supabase_wt> <version>...
+repair_migration_history() {
+  local supabase_wt="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+
+  local project_id
+  project_id="$(get_project_id "$supabase_wt")"
+  if [ -z "$project_id" ]; then
+    echo "  (warning: no project_id in config.toml — history not repaired)"
+    return 0
+  fi
+
+  local version_list
+  version_list=$(printf "'%s'," "$@")
+  version_list="${version_list%,}"
+
+  echo "Repairing migration history: $* => reverted"
+  docker exec -e PGPASSWORD=postgres "supabase_db_${project_id}" \
+    psql -U supabase_admin -d postgres -c \
+    "DELETE FROM supabase_migrations.schema_migrations WHERE version IN ($version_list);" \
+    >/dev/null 2>&1 || echo "  (warning: migration repair failed — continuing)"
+}
+
 clean_stale_symlinks() {
   local wt_path="$1"
   local supabase_wt="$2"
 
   local count=0
+  local versions=()
   local f resolved dir
   while IFS= read -r dir; do
     [ -d "$dir" ] || continue
@@ -265,6 +306,7 @@ clean_stale_symlinks() {
       [ -L "$f" ] || continue
       resolved="$(realpath "$f" 2>/dev/null || readlink "$f")"
       if [[ "$resolved" == "$wt_path/"* ]] && [ ! -f "$resolved" ]; then
+        versions+=("$(migration_version_of "$f")")
         rm "$f"
         count=$((count + 1))
       fi
@@ -273,6 +315,7 @@ clean_stale_symlinks() {
 
   if [ "$count" -gt 0 ]; then
     echo "Removed $count stale symlink(s) from the supabase worktree"
+    repair_migration_history "$supabase_wt" "${versions[@]}"
   fi
 }
 
@@ -280,12 +323,14 @@ clean_all_stale_symlinks() {
   local supabase_wt="$1"
 
   local count=0
+  local versions=()
   local f dir
   while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
       if [ ! -f "$(realpath "$f" 2>/dev/null || readlink "$f")" ]; then
+        versions+=("$(migration_version_of "$f")")
         rm "$f"
         count=$((count + 1))
       fi
@@ -294,6 +339,7 @@ clean_all_stale_symlinks() {
 
   if [ "$count" -gt 0 ]; then
     echo "Removed $count stale symlink(s) from the supabase worktree"
+    repair_migration_history "$supabase_wt" "${versions[@]}"
   else
     echo "No stale symlinks found"
   fi
@@ -575,37 +621,22 @@ unlink_worktree_migrations() {
 
   # Collect versions from this worktree's symlinks before removing them
   local versions=()
-  local f resolved basename_f version dir
+  local f resolved dir
   while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
       resolved="$(realpath "$f" 2>/dev/null || readlink "$f")"
       if [[ "$resolved" == "$wt_path/"* ]]; then
-        basename_f="$(basename "$f")"
-        version="${basename_f%%_*}"
-        versions+=("$version")
+        versions+=("$(migration_version_of "$f")")
       fi
     done
   done < <(list_migration_dirs "$supabase_wt")
 
   remove_wt_symlinks "$wt_path" "$supabase_wt"
 
-  # Repair migration history
   if [ ${#versions[@]} -gt 0 ]; then
-    local project_id
-    project_id="$(sed -n 's/^project_id = "\(.*\)"/\1/p' "$supabase_wt/supabase/config.toml")"
-    local db_container="supabase_db_${project_id}"
-
-    local version_list
-    version_list=$(printf "'%s'," "${versions[@]}")
-    version_list="${version_list%,}"
-
-    echo "Repairing migration history: ${versions[*]} => reverted"
-    docker exec -e PGPASSWORD=postgres "$db_container" \
-      psql -U supabase_admin -d postgres -c \
-      "DELETE FROM supabase_migrations.schema_migrations WHERE version IN ($version_list);" \
-      2>/dev/null || echo "  (warning: migration repair failed — continuing)"
+    repair_migration_history "$supabase_wt" "${versions[@]}"
   fi
 
   if supabase_is_running; then
