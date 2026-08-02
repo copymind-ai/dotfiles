@@ -5,7 +5,7 @@ source "$(dirname "$0")/../helpers.sh"
 echo ""
 printf "${BOLD}E2E: dev sb flow lifecycle${RESET}\n"
 
-# Entry state (left by 03-db-reset):
+# Entry state (left by 03-db-reset, preserved by 04-rollback-lifecycle):
 #   - Supabase running with edge_runtime enabled
 #   - feat-gamma worktree exists
 #   - shared supabase worktree has supabase/flows/noop.ts (git-tracked from fixture)
@@ -65,7 +65,18 @@ MIG_BASENAME="${MIG_TS}_create_${SLUG}_flow.sql"
 header "boot stack from feat-gamma (hostile starting state)"
 (cd "$SHARED_WT" && supabase stop --no-backup >/dev/null 2>&1) || true
 cd "$FEAT_WT"
-supabase start >/dev/null 2>&1
+# Retry once with visible output: a lingering `supabase functions serve`
+# from an earlier test can race the container teardown above, and a
+# silent one-shot `supabase start` under set -e kills the whole file
+# with zero diagnostics.
+if ! supabase start >/dev/null 2>&1; then
+  echo "  (supabase start from feat-gamma failed — retrying once in 5s)" >&2
+  sleep 5
+  START_OUT=$(supabase start 2>&1) || {
+    printf "${DIM}supabase start output:${RESET}\n%s\n" "$START_OUT" >&2
+    exit 1
+  }
+fi
 
 # ── Setup: add flow source + a hand-crafted migration to feat-gamma ──
 # We bypass real pgflow compilation by pre-placing the migration file the
