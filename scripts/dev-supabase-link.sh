@@ -50,6 +50,19 @@ fi
 echo "Found new migrations in $wt_name:"
 echo "$new_files" | sed 's/^/  /'
 
+# Rollbacks are local-only (git-ignored) compensating scripts; without one
+# `dev sb unlink` cannot revert a migration's DDL and it lingers in the
+# shared DB as phantom schema until a full reset. Lint, don't fail — the
+# convention is advisory, the warning teaches it at authoring time.
+ensure_rollbacks_excluded
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  if ! rollback_path_for "$current_wt" "$file" >/dev/null; then
+    printf "${RED}Warning:${RESET} no rollback script for %s\n" "$file"
+    echo "  Add supabase/rollbacks/${file#supabase/migrations/} so 'dev sb unlink' can revert it."
+  fi
+done <<<"$new_files"
+
 latest_ts="$(get_latest_origin_timestamp "$supabase_wt")"
 check_timestamps "$wt_name" "$new_files" "$latest_ts" "$supabase_wt"
 

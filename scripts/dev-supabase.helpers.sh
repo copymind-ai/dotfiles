@@ -602,6 +602,74 @@ supabase_stack_restart_ready() {
   retry_with_backoff 3 "supabase stack restart" _supabase_stack_restart_ready_once
 }
 
+# --- Rollback helpers ---
+#
+# Rollback files are LOCAL-ONLY development artifacts: for each migration
+# supabase/migrations[/<subdir>]/<ts>_name.sql a worktree may carry a
+# compensating script at supabase/rollbacks[/<subdir>]/<ts>_name.sql
+# (same relative path under rollbacks/). `dev sb unlink` / `dev wt down`
+# apply them newest-first so the shared DB's schema is actually reverted,
+# not just the migration history — without one, the unlinked migration's
+# DDL lingers as phantom schema until a full reset. They live outside
+# supabase/migrations/ so prod CI (`supabase db push`) and every *.sql
+# glob in these scripts never see them, and they are never committed:
+# ensure_rollbacks_excluded git-ignores them for every worktree at once.
+
+# Idempotently ignore supabase/rollbacks/ across all worktrees via the
+# bare repo's shared info/exclude (itself untracked), keeping the app
+# repo's .gitignore untouched.
+ensure_rollbacks_excluded() {
+  local exclude_file
+  exclude_file="$(cd "$(git rev-parse --git-common-dir)" && pwd)/info/exclude"
+  mkdir -p "$(dirname "$exclude_file")"
+  if ! grep -qx 'supabase/rollbacks/' "$exclude_file" 2>/dev/null; then
+    echo 'supabase/rollbacks/' >>"$exclude_file"
+    echo "Ignoring supabase/rollbacks/ in all worktrees (bare repo info/exclude)"
+  fi
+}
+
+# Map a migration's repo-relative path to its rollback file in <wt_path>.
+# Echoes the absolute rollback path if the file exists; returns 1 otherwise.
+rollback_path_for() {
+  local wt_path="$1" rel="$2"
+  local path="$wt_path/supabase/rollbacks/${rel#supabase/migrations/}"
+  [ -f "$path" ] || return 1
+  echo "$path"
+}
+
+# Apply rollback scripts against the shared DB, newest version first.
+# Args: <supabase_wt> <entries...> where each entry is "version<TAB>path".
+# Runs as supabase_admin (superuser) so event triggers etc. can be
+# dropped, mirroring do_migrate_up. A failing script does not abort the
+# loop. Results are reported via globals:
+#   APPLIED_ROLLBACK_COUNT    — number applied successfully
+#   FAILED_ROLLBACK_VERSIONS  — space-separated versions that failed
+apply_rollbacks() {
+  local supabase_wt="$1"
+  shift
+  APPLIED_ROLLBACK_COUNT=0
+  FAILED_ROLLBACK_VERSIONS=""
+  local db_port
+  db_port="$(get_db_port "$supabase_wt")"
+  if [ -z "$db_port" ]; then
+    echo "Error: could not read [db] port from $supabase_wt/supabase/config.toml" >&2
+    FAILED_ROLLBACK_VERSIONS="$(printf '%s\n' "$@" | cut -f1 | tr '\n' ' ')"
+    return 0
+  fi
+  local db_url="postgresql://supabase_admin:postgres@127.0.0.1:${db_port}/postgres"
+  local version path
+  while IFS=$'\t' read -r version path; do
+    [ -z "$version" ] && continue
+    echo "  Rolling back $version ($(basename "$path"))"
+    if psql "$db_url" -q -v ON_ERROR_STOP=1 -f "$path"; then
+      APPLIED_ROLLBACK_COUNT=$((APPLIED_ROLLBACK_COUNT + 1))
+    else
+      echo "  (warning: rollback for $version failed — its schema changes remain)" >&2
+      FAILED_ROLLBACK_VERSIONS="${FAILED_ROLLBACK_VERSIONS:+$FAILED_ROLLBACK_VERSIONS }$version"
+    fi
+  done < <(printf '%s\n' "$@" | sort -t$'\t' -k1,1 -rn)
+}
+
 # --- Migration application wrapper ---
 
 apply_migrations() {
@@ -619,24 +687,74 @@ unlink_worktree_migrations() {
     return 0
   }
 
-  # Collect versions from this worktree's symlinks before removing them
+  # Collect versions + rollback scripts from this worktree's symlinks
+  # before removing them.
   local versions=()
-  local f resolved dir
+  local rollback_entries=()
+  local no_rollback_versions=()
+  local f resolved dir rel rb version
   while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.sql; do
       [ -L "$f" ] || continue
       resolved="$(realpath "$f" 2>/dev/null || readlink "$f")"
       if [[ "$resolved" == "$wt_path/"* ]]; then
-        versions+=("$(migration_version_of "$f")")
+        version="$(migration_version_of "$f")"
+        versions+=("$version")
+        rel="${f#"$supabase_wt"/}"
+        if rb="$(rollback_path_for "$wt_path" "$rel")"; then
+          rollback_entries+=("$version"$'\t'"$rb")
+        else
+          no_rollback_versions+=("$version")
+        fi
       fi
     done
   done < <(list_migration_dirs "$supabase_wt")
+
+  # Revert the schema (+N-N): apply this worktree's rollback scripts,
+  # newest first, before the history rows are deleted. Without this the
+  # unlinked migrations' DDL would linger in the shared DB as phantom
+  # schema that the migration history no longer accounts for.
+  APPLIED_ROLLBACK_COUNT=0
+  FAILED_ROLLBACK_VERSIONS=""
+  if [ ${#rollback_entries[@]} -gt 0 ]; then
+    if supabase_is_running; then
+      echo "Applying ${#rollback_entries[@]} rollback script(s)..."
+      apply_rollbacks "$supabase_wt" "${rollback_entries[@]}"
+    else
+      echo "Warning: Supabase not running — cannot apply ${#rollback_entries[@]} rollback script(s)." >&2
+      local entry
+      for entry in "${rollback_entries[@]}"; do
+        FAILED_ROLLBACK_VERSIONS="${FAILED_ROLLBACK_VERSIONS:+$FAILED_ROLLBACK_VERSIONS }${entry%%$'\t'*}"
+      done
+    fi
+  fi
 
   remove_wt_symlinks "$wt_path" "$supabase_wt"
 
   if [ ${#versions[@]} -gt 0 ]; then
     repair_migration_history "$supabase_wt" "${versions[@]}"
+  fi
+
+  # Versions whose DDL is still in the shared DB: no rollback script, a
+  # failed one, or the stack was down. History no longer records them, so
+  # warn loudly — only a full reset (or a hand-written revert) clears them.
+  local leftover=()
+  if [ ${#no_rollback_versions[@]} -gt 0 ]; then
+    leftover+=("${no_rollback_versions[@]}")
+  fi
+  local v
+  for v in $FAILED_ROLLBACK_VERSIONS; do
+    leftover+=("$v")
+  done
+  if [ ${#leftover[@]} -gt 0 ]; then
+    echo ""
+    printf "${RED}Warning: %d unlinked migration(s) left phantom schema in the shared DB:${RESET}\n" "${#leftover[@]}"
+    printf "  - %s\n" "${leftover[@]}"
+    echo "  Their DDL is still applied but no longer tracked in migration history."
+    echo "  Add rollback scripts under supabase/rollbacks/ next time, or clean up now with:"
+    echo "    dev sb sync --reset   (full reset — wipes local data)"
+    echo ""
   fi
 
   if supabase_is_running; then

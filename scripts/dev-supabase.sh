@@ -59,7 +59,8 @@ case "${1:-}" in
     echo "  down [--force]  Stop shared Supabase instance" >&2
     echo "  status          Show Supabase status" >&2
     echo "  link            Symlink current worktree's migrations and apply" >&2
-    echo "  unlink          Remove current worktree's migration symlinks" >&2
+    echo "  unlink [--reset] Remove current worktree's migration symlinks + apply local" >&2
+    echo "                  rollbacks (supabase/rollbacks/); --reset = full DB reset after" >&2
     echo "  sync [--reset]  Fetch origin/main, update supabase worktree, clean stale symlinks" >&2
     echo "  migrate         Apply pending migrations in the shared worktree" >&2
     echo "  seed            Apply pending seeds (skips users.sql)" >&2
