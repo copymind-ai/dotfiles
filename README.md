@@ -63,7 +63,8 @@ dotfiles/
 │   └── e2e/                      # Multi-command workflows
 ├── tmux/
 │   ├── .tmux.conf
-│   └── monitor.sh                # prefix+M session monitor
+│   ├── monitor.sh                # prefix+M session monitor
+│   └── session-select.sh         # prefix+S session picker
 ├── zsh/.zshrc
 ├── test.sh                       # Test runner shortcut
 └── install.sh
@@ -140,6 +141,43 @@ Manages env vars across three places at once: `.env.example` (committed inventor
 | ------------- | ---------------------------------------------------------------- |
 | `dev nc up`   | Bootstrap NanoClaw via launchd (kickstarts a stale registration) |
 | `dev nc down` | Bootout NanoClaw via launchd                                     |
+
+## Session picker
+
+`prefix + S` opens a popup listing every session with a jump key — digits `1`-`9`
+first, then `a`-`z`, so switching is one keystroke:
+
+```
+ SESSIONS  12
+
+  1  admin                     1w
+  2 *dotfiles                  3w
+  3 +graspen-course-ai         2w
+  ...
+  c  zz-other                  1w
+
+  1-9/a-z switch   esc cancel   * here   + attached
+```
+
+`*` marks the session this client is on, `+` one another client is attached to,
+and the last column counts windows. `esc` (or any unassigned key) closes it.
+Only the client that opened the picker moves.
+
+Notes:
+
+- Replaces tmux's own `choose-session`, whose labels start at `0` and switch to
+  `M-a` from the tenth entry on, and are not configurable.
+- Sessions are listed alphabetically, so the keys are stable between openings —
+  they only shift when a session is created or destroyed.
+- A list too tall for the client flows into up to three columns, filled top to
+  bottom, rather than scrolling the first keys off the top. A client too short
+  even for that loses the header first, and says `... N more` if entries still
+  do not fit.
+- Past the 35th session there are no keys left; those are listed but not
+  jumpable.
+- Tunables: `PICKER_FILTER` (regex; list only matching sessions),
+  `PICKER_WIDTH` (popup width, default 56), `PICKER_COLW` (width of one column
+  once there is more than one, default 30).
 
 ## Session monitor
 
