@@ -8,8 +8,9 @@
 # Replaces tmux's own choose-session, whose labels start at 0 and switch to M-a
 # from the tenth entry on, and are not configurable.
 #
-# Keys: 1-9/a-z switch to that session, esc or enter cancel. Nothing is
-# reserved, so every letter can name a session.
+# Keys: 1-9 then a-z switch to that session, esc or enter cancel. h, j, k and l
+# are skipped: they are the pane navigation keys, and reaching for one here
+# should do nothing rather than fling you into an unrelated session.
 #
 # Tunables: PICKER_FILTER (regex; only sessions matching it are listed, default
 # all), PICKER_WIDTH (popup width, default 56), PICKER_COLW (width of one column
@@ -28,8 +29,9 @@ COLW=${PICKER_COLW:-30}
 COLW_MIN=22   # narrowest a column may get before another one is out of the question
 
 # Digits first -- they match the muscle memory of window indices -- then the
-# whole alphabet. 35 keys in total; anything past that is listed without one.
-KEYS="123456789abcdefghijklmnopqrstuvwxyz"
+# alphabet less hjkl, which stay pane navigation. 31 keys in total; anything past
+# that is listed without one.
+KEYS="123456789abcdefgimnopqrstuvwxyz"
 
 if [ -t 1 ] || [ -n "${PICKER_FORCE_COLOR:-}" ]; then
   C_RST=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_REV=$'\033[7m'
@@ -163,7 +165,7 @@ render() {
       printf '%s%-*s%s\n\n' "${C_REV}${C_BOLD}" "$w" \
         "$(printf ' SESSIONS  %d' "$n")" "$C_RST"
       printf '%s' "$out"
-      printf '\n%s  %s1-9/a-z%s switch   %sesc%s cancel   %s*%s here   %s+%s attached%s' \
+      printf '\n%s  %s1-9/a-z%s (not hjkl)  %sesc%s cancel  %s*%s here  %s+%s attached%s' \
         "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
         "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST"
     else

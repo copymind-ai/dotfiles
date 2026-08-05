@@ -7,7 +7,9 @@
 #
 # Bound to prefix+M in .tmux.conf.
 #
-# Keys: 1-9/a-p jump to that session, r refresh now, q quit.
+# Keys: 1-9 then a-z jump to that session, r refresh now, q quit. h, j, k and l
+# are skipped: they are the pane navigation keys, and reaching for one here should
+# do nothing rather than fling you into an unrelated session.
 #
 # Every session is listed except the monitor itself. For each one it picks the
 # window to report on: a window actually running Claude, else one named
@@ -27,8 +29,9 @@ MONITOR_WINDOW=${MONITOR_WINDOW:-claude}
 MONITOR_FILTER=${MONITOR_FILTER:-}
 
 # Digits first (natural for the first handful), then letters. 'q' and 'r' are
-# left out on purpose -- they are quit and refresh.
-KEYS="123456789abcdefghijklmnop"
+# left out on purpose -- they are quit and refresh -- and so are hjkl, which stay
+# pane navigation. 29 keys in total.
+KEYS="123456789abcdefgimnopstuvwxyz"
 
 # --- terminal control -------------------------------------------------------
 # Kept as variables rather than printf escapes so the same strings work in sed
@@ -313,7 +316,7 @@ render() {
     printf '%s\n' "$T_EL"
     printf '%s' "$out" | sed "s/\$/${T_EL}/"
     printf '%s\n' "$T_EL"
-    printf '%s  %s1-9/a-p%s jump   %sr%s refresh   %sq%s quit%s%s\n' \
+    printf '%s  %s1-9/a-z%s (not hjkl) jump   %sr%s refresh   %sq%s quit%s%s\n' \
       "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
       "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST" "$T_EL"
     printf '%s' "$T_ED"

@@ -156,7 +156,7 @@ first, then `a`-`z`, so switching is one keystroke:
   ...
   c  zz-other                  1w
 
-  1-9/a-z switch   esc cancel   * here   + attached
+  1-9/a-z (not hjkl)  esc cancel  * here  + attached
 ```
 
 `*` marks the session this client is on, `+` one another client is attached to,
@@ -173,7 +173,9 @@ Notes:
   bottom, rather than scrolling the first keys off the top. A client too short
   even for that loses the header first, and says `... N more` if entries still
   do not fit.
-- Past the 35th session there are no keys left; those are listed but not
+- `h`, `j`, `k` and `l` are skipped, so reaching for a pane navigation key here
+  does nothing instead of flinging you into an unrelated session.
+- Past the 31st session there are no keys left; those are listed but not
   jumpable.
 - Tunables: `PICKER_FILTER` (regex; list only matching sessions),
   `PICKER_WIDTH` (popup width, default 56), `PICKER_COLW` (width of one column
@@ -195,11 +197,12 @@ its Claude window is doing right now.
   ...
   f  zz-other                other         2s  sleep
 
-  1-9/a-p jump   r refresh   q quit
+  1-9/a-z (not hjkl) jump   r refresh   q quit
 ```
 
 Press a session's key to jump to it — only the client showing the monitor moves,
 so other attached clients are left where they are. `q` closes the monitor.
+`h`, `j`, `k`, `l` are skipped (pane navigation), as are `q` and `r`.
 
 | State       | Means                                                    |
 | ----------- | -------------------------------------------------------- |
