@@ -91,26 +91,10 @@ monitor_pick_window() {
 # Visible text of a window's active pane, no escape sequences.
 monitor_capture() { tmux capture-pane -p -t "$1" 2>/dev/null; }
 
-# Seconds since that window last had output.
-monitor_age() {
-  local a now
-  a=$(tmux display-message -p -t "$1" '#{window_activity}' 2>/dev/null) || return
-  [ -n "$a" ] || return
-  now=$(date +%s)
-  printf '%s' "$((now - a))"
-}
-
-# 95 -> 1m, 4210 -> 1h10m, 1050480 -> 12d3h
-monitor_ago() {
-  local s=${1:-} m h d
-  case $s in ''|*[!0-9]*) printf '?'; return ;; esac
-  if [ "$s" -lt 60 ]; then printf '%ds' "$s"; return; fi
-  m=$((s / 60))
-  if [ "$m" -lt 60 ]; then printf '%dm' "$m"; return; fi
-  h=$((m / 60))
-  if [ "$h" -lt 24 ]; then printf '%dh%dm' "$h" "$((m % 60))"; return; fi
-  d=$((h / 24)); printf '%dd%dh' "$d" "$((h % 24))"
-}
+# There used to be an age column here, seconds since #{window_activity} formatted
+# as 12d3h. It was dropped: a working session streams output constantly, so its
+# activity timestamp keeps bumping and the column read 0s however long the turn
+# had run -- the one number you actually want it to show.
 
 # --- state ------------------------------------------------------------------
 
@@ -217,16 +201,16 @@ monitor_classify() {
   printf 'idle|%s' "$agents"
 }
 
-# State of a session -> "window_id|state|detail". The free-text detail goes last
-# so that a prompt containing "|" cannot shift the other fields when read splits
-# on it (the final variable of a `read` gets the unsplit remainder).
+# State of a session -> "state|detail". The free-text detail goes last so that a
+# prompt containing "|" cannot shift the other fields when read splits on it (the
+# final variable of a `read` gets the unsplit remainder).
 monitor_state() {
   local sess=$1 pick id cmd
   pick=$(monitor_pick_window "$sess")
-  if [ -z "$pick" ]; then printf '|gone|'; return; fi
+  if [ -z "$pick" ]; then printf 'gone|'; return; fi
   id=${pick%%|*}
   cmd=${pick#*|}
-  printf '%s|%s' "$id" "$(monitor_classify "$cmd" "$(monitor_capture "$id")" "$id")"
+  monitor_classify "$cmd" "$(monitor_capture "$id")" "$id"
 }
 
 # Sets STATE_TEXT (fixed-width, ASCII on purpose: printf pads by bytes, so a
@@ -292,29 +276,27 @@ monitor_sel_sync() {
 
 ROW_STATE=()   # per session, same order as SESSIONS
 ROW_DETAIL=()
-ROW_AGE=()
 N_CLAUDE=0
 N_WORK=0
 N_NEED=0
 
 # Polls every session and fills the row arrays. This is the expensive half -- a
-# capture-pane and a couple of display-messages per session, about 25ms each --
-# so it runs on the refresh tick and not on every keystroke. Moving the cursor
+# list-windows, a capture-pane and a display-message per session, about 20ms each
+# -- so it runs on the refresh tick and not on every keystroke. Moving the cursor
 # cannot change any of it, and redrawing from what is already here is what keeps
 # j and k instant.
 monitor_collect() {
-  local sess wid state detail
+  local sess state detail
   SESSIONS=()
   while IFS= read -r sess; do SESSIONS+=("$sess"); done < <(monitor_sessions)
   monitor_sel_sync
 
-  ROW_STATE=(); ROW_DETAIL=(); ROW_AGE=()
+  ROW_STATE=(); ROW_DETAIL=()
   N_CLAUDE=0; N_WORK=0; N_NEED=0
   for sess in ${SESSIONS[@]+"${SESSIONS[@]}"}; do
-    IFS='|' read -r wid state detail <<<"$(monitor_state "$sess")"
+    IFS='|' read -r state detail <<<"$(monitor_state "$sess")"
     ROW_STATE+=("$state")
     ROW_DETAIL+=("$detail")
-    ROW_AGE+=("$(monitor_ago "$(monitor_age "${wid:-$sess}")")")
     case $state in
       ask)   N_NEED=$((N_NEED + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       busy)  N_WORK=$((N_WORK + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
@@ -327,10 +309,10 @@ monitor_collect() {
 # row with printf -v, so a keystroke that only moves the cursor costs a redraw and
 # nothing else.
 monitor_draw() {
-  local h w i n state detail age maxd pad row out="" hdr name
+  local h w i n state detail maxd pad row out="" hdr name
   read -r h w <<<"$(term_size)"
 
-  maxd=$((w - 50))
+  maxd=$((w - 43))
   [ "$maxd" -lt 12 ] && maxd=12
 
   n=${#SESSIONS[@]}
@@ -341,28 +323,26 @@ monitor_draw() {
     state=${ROW_STATE[$i]}
     detail=${ROW_DETAIL[$i]}
     [ ${#detail} -gt "$maxd" ] && detail=${detail:0:maxd}
-    age=${ROW_AGE[$i]}
     monitor_state_style "$state"
     if [ "$i" = "$SEL" ]; then
       # The cursor's row goes in reverse video, with no inner resets -- one would
       # end the highlight halfway across -- and padded out so the bar reaches the
       # right edge (tmux erases in the default attribute, so ESC[K cannot do that
-      # for us). The 47 is what the columns before the detail take: mark, key,
-      # name, state and age with their gaps. The mark is kept as well, so the
-      # cursor is still visible with colors off; it and the padding live outside
-      # every %-*s, so a multibyte glyph cannot skew them.
-      pad=$((w - 47 - ${#detail}))
+      # for us). The 40 is what the columns before the detail take: mark, key,
+      # name and state with their gaps. The mark is kept as well, so the cursor is
+      # still visible with colors off; it and the padding live outside every
+      # %-*s, so a multibyte glyph cannot skew them.
+      pad=$((w - 40 - ${#detail}))
       [ "$pad" -lt 0 ] && pad=0
-      printf -v row '%s▸ %s  %-23s %s  %5s  %s%*s%s' \
+      printf -v row '%s▸ %s  %-23s %s  %s%*s%s' \
         "$C_REV" "${KEYS:$i:1}" \
-        "$name" "$STATE_TEXT" "$age" \
+        "$name" "$STATE_TEXT" \
         "$detail" "$pad" '' "$C_RST"
     else
-      printf -v row '  %s%s%s  %-23s %s%s%s  %5s  %s%s%s' \
+      printf -v row '  %s%s%s  %-23s %s%s%s  %s%s%s' \
         "$C_BOLD" "${KEYS:$i:1}" "$C_RST" \
         "$name" \
         "$STATE_COLOR" "$STATE_TEXT" "$C_RST" \
-        "$age" \
         "$C_DIM" "$detail" "$C_RST"
     fi
     # T_EL per row here rather than a sed over the whole block: that was one more

@@ -198,13 +198,13 @@ its Claude window is doing right now.
 ```
  MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s
 
-  1  admin                   shell      12d3h
-  2  article                 draft      1d22h  let's draft §3 now
-▸ 3  copyclaw                NEEDS YOU     1m  Do you want to make this edit to auth.ts?
-  4  dotfiles                working       4s  Cooking…
-  5  graspen-course-ai       idle         13m  2 agents
+  1  admin                   shell
+  2  article                 draft      let's draft §3 now
+▸ 3  copyclaw                NEEDS YOU  Do you want to make this edit to auth.ts?
+  4  dotfiles                working    Cooking…
+  5  graspen-course-ai       idle       2 agents
   ...
-  f  zz-other                other         2s  sleep
+  f  zz-other                other      sleep
 
   j/k move   enter jump   1-9/a-z jump directly   r refresh   q quit
 ```
@@ -241,6 +241,9 @@ Notes:
   client to the monitored sessions and cannot resize or disturb them.
 - `N agents` in Claude's footer stays on screen while it is idle, so it is
   reported as detail, not as a busy state.
+- There is no time column. It used to show the age of the window's last output,
+  which is worthless for exactly the rows you care about: a working session
+  streams constantly, so it always read `0s` no matter how long the turn had run.
 - The patterns live in `monitor_classify()` in `tmux/monitor.sh` — the one place to
   fix if a Claude Code release reworks its footer.
 - Tunables: `MONITOR_INTERVAL` (seconds, default 2), `MONITOR_WINDOW` (preferred
