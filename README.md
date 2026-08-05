@@ -61,7 +61,9 @@ dotfiles/
 │   ├── unit/                     # Pure function tests
 │   ├── integration/              # Single-command tests
 │   └── e2e/                      # Multi-command workflows
-├── tmux/.tmux.conf
+├── tmux/
+│   ├── .tmux.conf
+│   └── monitor.sh                # prefix+M session monitor
 ├── zsh/.zshrc
 ├── test.sh                       # Test runner shortcut
 └── install.sh
@@ -138,6 +140,57 @@ Manages env vars across three places at once: `.env.example` (committed inventor
 | ------------- | ---------------------------------------------------------------- |
 | `dev nc up`   | Bootstrap NanoClaw via launchd (kickstarts a stale registration) |
 | `dev nc down` | Bootout NanoClaw via launchd                                     |
+
+## Session monitor
+
+`prefix + M` opens the `monitor` session: one line per tmux session, showing what
+its Claude window is doing right now.
+
+```
+ MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s
+
+  1  admin                   shell      12d3h
+  2  article                 draft      1d22h  let's draft §3 now
+  3  copyclaw                NEEDS YOU     1m  Do you want to make this edit to auth.ts?
+  4  dotfiles                working       4s  Cooking…
+  5  graspen-course-ai       idle         13m  2 agents
+  ...
+  f  zz-other                other         2s  sleep
+
+  1-9/a-p jump   r refresh   q quit
+```
+
+Press a session's key to jump to it — only the client showing the monitor moves,
+so other attached clients are left where they are. `q` closes the monitor.
+
+| State       | Means                                                    |
+| ----------- | -------------------------------------------------------- |
+| `working`   | Claude is generating (`esc to interrupt` on screen)      |
+| `NEEDS YOU` | waiting on a permission or plan prompt                   |
+| `draft`     | text typed into the prompt but not sent                  |
+| `idle`      | up with an empty prompt (detail shows background agents) |
+| `shell`     | just a shell                                             |
+| `other`     | something else running; detail names the command         |
+| `gone`      | session or window disappeared                            |
+
+Which window each session is judged by, in order: one actually running Claude,
+else one named `claude`, else the session's active window. Claude Code reports its
+version as its process name (`2.1.222`), which is how it is recognised — so a
+window auto-renamed away from `claude` is still found.
+
+Notes:
+
+- State is derived by polling `capture-pane`, so the monitor never attaches a
+  client to the monitored sessions and cannot resize or disturb them.
+- `N agents` in Claude's footer stays on screen while it is idle, so it is
+  reported as detail, not as a busy state.
+- The patterns live in `monitor_classify()` in `tmux/monitor.sh` — the one place to
+  fix if a Claude Code release reworks its footer.
+- Tunables: `MONITOR_INTERVAL` (seconds, default 2), `MONITOR_WINDOW` (preferred
+  window name, default `claude`), `MONITOR_FILTER` (regex; list only matching
+  sessions, e.g. `^graspen-`), `MONITOR_SESSION` (default `monitor`).
+- `prefix + M` replaces tmux's default "clear marked pane"; `prefix + m` still
+  toggles a mark.
 
 ## Testing
 

@@ -122,6 +122,7 @@ fi
 info "Creating symlinks..."
 link "$DOTFILES/zsh/.zshrc"                  "$HOME/.zshrc"
 link "$DOTFILES/tmux/.tmux.conf"             "$HOME/.tmux.conf"
+link "$DOTFILES/tmux/monitor.sh"             "$HOME/.tmux/monitor.sh"
 link "$DOTFILES/neovim/.config/nvim"         "$HOME/.config/nvim"
 link "$DOTFILES/ghostty/.config/ghostty"     "$HOME/.config/ghostty"
 
