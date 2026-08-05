@@ -111,7 +111,33 @@ monitor_ago() {
 
 # --- state ------------------------------------------------------------------
 
-# monitor_classify <pane_current_command> <pane text>  ->  "state|detail"
+# Braille frames Claude spins in the pane title while it works. Only used when
+# perl is missing: the perl check below covers the whole braille block, so it
+# survives Claude picking frames that are not in this list.
+BRAILLE_FRAMES='⠁⠂⠄⠈⠐⠠⡀⢀⠃⠆⠇⠋⠏⠙⠘⠸⠴⠦⠧⠹⠼⣀⣤⣶⣿'
+
+monitor_title() { tmux display-message -p -t "$1" '#{pane_title}' 2>/dev/null; }
+
+# True when a window's title says Claude is working. Claude sets the title to
+# "<braille frame> <task summary>" for the whole turn and swaps the frame for
+# "✳" the moment it stops, so the leading glyph is the signal. Anything else --
+# "✳ Claude Code", a bare hostname, an empty title -- is not working.
+monitor_title_busy() {
+  local t
+  [ -n "${1:-}" ] || return 1
+  t=$(monitor_title "$1") || return 1
+  [ -n "$t" ] || return 1
+  if command -v perl >/dev/null 2>&1; then
+    printf '%s' "$t" |
+      perl -CS -ne 'exit(ord(substr($_, 0, 1)) >= 0x2800 &&
+                         ord(substr($_, 0, 1)) <= 0x28FF ? 0 : 1)'
+    return
+  fi
+  case $BRAILLE_FRAMES in *"$(printf '%s' "$t" | head -c 3)"*) return 0 ;; esac
+  return 1
+}
+
+# monitor_classify <pane_current_command> <pane text> [window id] -> "state|detail"
 #
 #   ask     Claude is waiting on a permission / plan prompt  (actionable)
 #   busy    Claude is generating
@@ -121,10 +147,11 @@ monitor_ago() {
 #   other   something else running (detail says what)
 #   gone    session or window disappeared
 #
-# The patterns below are Claude Code UI strings, kept in this one function on
-# purpose: if a future version reworks its footer, this is the only place to fix.
+# The patterns below are Claude Code UI strings, kept here (and in
+# monitor_title_busy) on purpose: if a future version reworks its footer or its
+# title, those two are the only places to fix.
 monitor_classify() {
-  local cmd=$1 text=$2 detail
+  local cmd=$1 text=$2 wid=${3:-} detail
 
   [ -n "$cmd" ] || { printf 'gone|'; return; }
   case $cmd in
@@ -133,21 +160,39 @@ monitor_classify() {
   is_claude_cmd "$cmd" || { printf 'other|%s' "$cmd"; return; }
 
   # Actionable prompts win: a pending question matters more than the spinner.
-  if printf '%s\n' "$text" | grep -qE 'Do you want|Would you like|Ready to code\?'; then
+  # The last pattern is the first-run folder-trust prompt, which asks with none
+  # of the usual wording.
+  local asks='Do you want|Would you like|Ready to code\?|Is this a project you created'
+  if printf '%s\n' "$text" | grep -qE "$asks"; then
     detail=$(printf '%s\n' "$text" |
-      grep -E 'Do you want|Would you like|Ready to code\?' |
+      grep -E "$asks" |
       tail -1 |
       sed -e 's/^[^[:alnum:]]*//' -e 's/[[:space:]]*$//')
     printf 'ask|%s' "$detail"
     return
   fi
 
-  if printf '%s\n' "$text" | grep -qF 'esc to interrupt'; then
+  # Working. Claude's own footer hint ("esc to interrupt") is gone as of 2.1.x,
+  # and the status line ("✢ Musing… (7s · thinking)") only shows before the
+  # reply starts streaming -- so the title is what actually spans the turn.
+  # Both text forms are still checked: they cost one grep and cover versions
+  # that do not set a title.
+  if monitor_title_busy "$wid" ||
+     printf '%s\n' "$text" | grep -qE 'esc to interrupt|\([0-9]+s · '; then
     # "✻ Cooking… (esc to interrupt · ctrl+t to hide todos)" -> "Cooking…"
+    # "✢ Musing… (7s · ↓ 481 tokens · thinking)"            -> "Musing…"
     detail=$(printf '%s\n' "$text" |
-      grep -F 'esc to interrupt' |
+      grep -E 'esc to interrupt|\([0-9]+s · ' |
       tail -1 |
-      sed -e 's/(esc to interrupt.*//' -e 's/^[^[:alnum:]]*//' -e 's/[[:space:]]*$//')
+      sed -e 's/(esc to interrupt.*//' -e 's/([0-9]*s · .*//' \
+          -e 's/^[^[:alnum:]]*//' -e 's/[[:space:]]*$//')
+    # No status line on screen: fall back to the title's task summary. "Claude
+    # Code" is the placeholder title of a turn too young to have a summary yet,
+    # so it says nothing worth a column.
+    if [ -z "$detail" ] && [ -n "$wid" ]; then
+      detail=$(monitor_title "$wid" | sed -e 's/^[^ ]* //' -e 's/[[:space:]]*$//')
+      [ "$detail" = 'Claude Code' ] && detail=
+    fi
     printf 'busy|%s' "$detail"
     return
   fi
@@ -178,7 +223,7 @@ monitor_state() {
   if [ -z "$pick" ]; then printf '|gone|'; return; fi
   id=${pick%%|*}
   cmd=${pick#*|}
-  printf '%s|%s' "$id" "$(monitor_classify "$cmd" "$(monitor_capture "$id")")"
+  printf '%s|%s' "$id" "$(monitor_classify "$cmd" "$(monitor_capture "$id")" "$id")"
 }
 
 # State -> fixed-width label + color. ASCII on purpose: printf pads by bytes, so
