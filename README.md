@@ -151,32 +151,41 @@ first, then `a`-`z`, so switching is one keystroke:
  SESSIONS  12
 
   1  admin                     1w
-  2 *dotfiles                  3w
+▸ 2 *dotfiles                  3w
   3 +graspen-course-ai         2w
   ...
   c  zz-other                  1w
 
-  1-9/a-z (not hjkl)  esc cancel  * here  + attached
+  j/k move  h/l column  enter switch  esc cancel
+  1-9/a-z jump directly   * here   + attached
 ```
 
+Either press a session's key, or walk the cursor to it with `j`/`k` (or the
+arrow keys) and hit `enter`. The cursor's row is highlighted (shown above as
+`▸`, which is also drawn, so the cursor survives a terminal with no colors), and
+it starts on the session you are already in. `h`/`l` step a whole column, so
+they do nothing while the list is one column wide. `esc` cancels; any other key
+is ignored rather than closing the popup under you.
+
 `*` marks the session this client is on, `+` one another client is attached to,
-and the last column counts windows. `esc` (or any unassigned key) closes it.
-Only the client that opened the picker moves.
+and the last column counts windows. Only the client that opened the picker
+moves.
 
 Notes:
 
 - Replaces tmux's own `choose-session`, whose labels start at `0` and switch to
   `M-a` from the tenth entry on, and are not configurable.
 - Sessions are listed alphabetically, so the keys are stable between openings —
-  they only shift when a session is created or destroyed.
+  they only shift when a session is created or destroyed. The cursor follows the
+  session it is on, not its index, so a session appearing or going away while the
+  popup is open does not move it.
 - A list too tall for the client flows into up to three columns, filled top to
   bottom, rather than scrolling the first keys off the top. A client too short
   even for that loses the header first, and says `... N more` if entries still
   do not fit.
-- `h`, `j`, `k` and `l` are skipped, so reaching for a pane navigation key here
-  does nothing instead of flinging you into an unrelated session.
-- Past the 31st session there are no keys left; those are listed but not
-  jumpable.
+- `h`, `j`, `k` and `l` are left out of the jump keys because they drive the
+  cursor. Past the 31st session there are no keys left; those are listed, and
+  reachable with the cursor.
 - Tunables: `PICKER_FILTER` (regex; list only matching sessions),
   `PICKER_WIDTH` (popup width, default 56), `PICKER_COLW` (width of one column
   once there is more than one, default 30).
@@ -191,18 +200,25 @@ its Claude window is doing right now.
 
   1  admin                   shell      12d3h
   2  article                 draft      1d22h  let's draft §3 now
-  3  copyclaw                NEEDS YOU     1m  Do you want to make this edit to auth.ts?
+▸ 3  copyclaw                NEEDS YOU     1m  Do you want to make this edit to auth.ts?
   4  dotfiles                working       4s  Cooking…
   5  graspen-course-ai       idle         13m  2 agents
   ...
   f  zz-other                other         2s  sleep
 
-  1-9/a-z (not hjkl) jump   r refresh   q quit
+  j/k move   enter jump   1-9/a-z jump directly   r refresh   q quit
 ```
 
-Press a session's key to jump to it — only the client showing the monitor moves,
-so other attached clients are left where they are. `q` closes the monitor.
-`h`, `j`, `k`, `l` are skipped (pane navigation), as are `q` and `r`.
+Press a session's key to jump to it, or move the cursor with `j`/`k` (or the
+arrow keys) and hit `enter`. The cursor's row is highlighted (shown above as `▸`,
+which is also drawn, so the cursor survives a terminal with no colors). Only the
+client showing the monitor moves, so other attached clients are left where they
+are. `q` or `esc` closes the monitor.
+
+`h`, `j`, `k` and `l` are left out of the jump keys because they drive the
+cursor — `h`/`l` do nothing here, the list being one column — and so are `q` and
+`r`. The cursor stays on its session across refreshes, even as sessions come and
+go and the keys shift under it.
 
 | State       | Means                                                    |
 | ----------- | -------------------------------------------------------- |
