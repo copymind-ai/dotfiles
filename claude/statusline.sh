@@ -65,6 +65,15 @@ IFS=$'\037' read -r ctx cost lim5 lim7 rst5 rst7 sub model session now day < <(
   ] | map(tostring) | join("\u001f")' 2>/dev/null
 ) || true
 
+# The session id becomes part of two filenames below -- the ledger's and the
+# export's -- so a value that is not a plain id is dropped rather than turned into
+# a path. Claude has only ever sent a uuid; this is here so that it could not
+# matter if that changed. Everything keyed by it then skips, and the rendered line
+# is unaffected.
+case $session in
+  ''|*[!A-Za-z0-9_-]*) session="" ;;
+esac
+
 # "1.234" -> CENTS=123, in integer arithmetic because bash has no floats.
 CENTS=0
 to_cents() {
@@ -163,13 +172,27 @@ if [ -n "$session" ] && [ -n "$day" ] && [ "$day" != null ]; then
 fi
 
 # --- export -----------------------------------------------------------------
-# Keyed by tmux server pid and pane id together. Pane numbering restarts with a
-# new tmux server, so the pid is what stops a leftover file from a dead server
-# being read as this pane's state.
+# Keyed by tmux server pid and pane id together, where there is a pane. Pane
+# numbering restarts with a new tmux server, so the pid is what stops a leftover
+# file from a dead server being read as this pane's state.
+#
+# Where there is not, the session id does instead. A session with no pane is
+# usually a parked job -- `claude` hands long work to a background session under
+# its daemon, which does not pass $TMUX_PANE on -- and that session is the one
+# actually spending the money the monitor wants to show. It is reached by
+# following the pane's parkedJobId; see tmux/monitor.sh and claude/monitor-hook.sh,
+# which keys its half the same way.
+dir=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
+key=""
 if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then
   IFS=, read -r _sock _spid _sid <<<"$TMUX"
-  dir=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
   key="${_spid:-0}-${TMUX_PANE#%}"
+else
+  # Checked above, so this is either a plain id or empty -- and empty means no
+  # pane and no id to stand in for one, which is nothing we can file.
+  [ -n "$session" ] && key="sess-$session"
+fi
+if [ -n "$key" ]; then
   if mkdir -p "$dir" 2>/dev/null; then
 
     # --- spend accrued past the subscription -----------------------------

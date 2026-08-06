@@ -17,9 +17,9 @@
 #
 # What each session is doing is read off its screen. Where claude/statusline.sh
 # and claude/monitor-hook.sh are installed, they leave what the screen cannot
-# show -- context and cost, and state straight from Claude's own events -- in
-# $CLAUDE_MONITOR_DIR, and those are merged in. Sessions without them lose the
-# extra columns and nothing else.
+# show -- context and cost, how many subagents are in flight, and state straight
+# from Claude's own events -- in $CLAUDE_MONITOR_DIR, and those are merged in.
+# Sessions without them lose the extra columns and nothing else.
 #
 # The status line also keeps a ledger there of what every session has spent, day
 # by day, which outlives the sessions themselves: that is where the day, week,
@@ -41,6 +41,9 @@ MONITOR_WINDOW=${MONITOR_WINDOW:-claude}
 MONITOR_FILTER=${MONITOR_FILTER:-}
 MONITOR_DIR=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
 MONITOR_STALE=${MONITOR_STALE:-90}
+# Claude's own session registry, one small JSON file per running session. Read
+# only to follow parked jobs; see the parked jobs section.
+SESSION_DIR=${CLAUDE_SESSION_DIR:-$HOME/.claude/sessions}
 
 # Digits first (natural for the first handful), then letters. 'q' and 'r' are
 # left out on purpose -- they are quit and refresh -- and so are hjkl, which move
@@ -254,6 +257,8 @@ X_LIM5=""     # account-wide, so they belong in the header rather than a row
 X_LIM7=""
 X_RST5=""     # already formatted for the header; see monitor_fmt_reset
 X_RST7=""
+X_AGENTS=()   # per session: subagents in flight; see monitor_count_agents
+X_AGENT_ALL=0 # and the fleet's, which belongs in the header rather than a row
 # Spend is split by how the session is paying, because on a subscription the two
 # mean completely different things. A subscription session's cost is notional --
 # what those tokens would have cost at API rates -- and nothing is billed for it;
@@ -307,23 +312,24 @@ monitor_fmt_reset() {
 # those before writing for exactly this reason.
 KV_STATE=""; KV_DETAIL=""; KV_TS=0
 KV_CTX=""; KV_COST=""; KV_LIM5=""; KV_LIM7=""
-KV_RST5=""; KV_RST7=""; KV_SUB=""
+KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_SESSION=""
 monitor_read_kv() {
   local f=$1 k v
   [ -r "$f" ] || return 1
   while IFS='=' read -r k v; do
     case $k in
-      state)  KV_STATE=$v ;;
-      detail) KV_DETAIL=$v ;;
-      ctx)    KV_CTX=$v ;;
-      cost)   KV_COST=$v ;;
-      over)   KV_OVER=$v ;;
-      lim5)   KV_LIM5=$v ;;
-      lim7)   KV_LIM7=$v ;;
-      rst5)   KV_RST5=$v ;;
-      rst7)   KV_RST7=$v ;;
-      sub)    KV_SUB=$v ;;
-      ts)     KV_TS=$v ;;
+      state)   KV_STATE=$v ;;
+      detail)  KV_DETAIL=$v ;;
+      ctx)     KV_CTX=$v ;;
+      cost)    KV_COST=$v ;;
+      over)    KV_OVER=$v ;;
+      lim5)    KV_LIM5=$v ;;
+      lim7)    KV_LIM7=$v ;;
+      rst5)    KV_RST5=$v ;;
+      rst7)    KV_RST7=$v ;;
+      sub)     KV_SUB=$v ;;
+      session) KV_SESSION=$v ;;
+      ts)      KV_TS=$v ;;
     esac
   done < "$f"
   return 0
@@ -342,25 +348,150 @@ monitor_clock() {
   [ -n "$MON_NOW" ]
 }
 
+# --- parked jobs --------------------------------------------------------------
+#
+# What is in a pane is not always what is doing the work. Handed something long,
+# Claude parks it: a background session is started under its daemon and the pane
+# shows that session instead. The daemon does not pass $TMUX_PANE on, so the
+# session actually working -- spending the money, running the agents -- has no
+# pane to be keyed by, and the pane's own export freezes at the moment it parked.
+# A row showing that export is not stale by a little: it is the wrong session.
+#
+# Claude keeps a registry that closes the gap, one small JSON file per running
+# session in $SESSION_DIR. The session in the pane carries a parkedJobId, and the
+# session doing the work carries the matching jobId along with its own session id
+# -- which is the key its exports are filed under. So: pane -> its session id ->
+# parkedJobId -> jobId -> the background session's export.
+#
+# The whole registry is read once a tick into two flat indexes, since bash 3.2 on
+# this laptop has no associative arrays. A few dozen one-line files read by bash
+# itself, so this costs no forks either.
+PARKED_BY_SID=" "   # " <session id>:<parked job id> " for each that has parked one
+SID_BY_JOB=" "      # " <job id>:<session id> " for each background session
+
+# One string field out of one line of flat JSON, without a fork. Keys are matched
+# with the punctuation in front of them, or "jobId" would find "parkedJobId" -- a
+# session would then be read as the parked job of itself. A value with an escaped
+# quote in it would come back short, which is why this is only ever used for ids.
+JSTR=""
+monitor_json_str() {
+  local line=$1 k=$2 rest
+  JSTR=""
+  case $line in
+    *",\"$k\":\""*) rest=${line#*",\"$k\":\""} ;;
+    *"{\"$k\":\""*) rest=${line#*"{\"$k\":\""} ;;
+    *) return 1 ;;
+  esac
+  JSTR=${rest%%'"'*}
+  [ -n "$JSTR" ]
+}
+
+# Fills the two indexes. A registry that is not there at all -- another machine's
+# monitor directory, an older Claude -- leaves them empty and every pane then
+# reads as unparked, which is what it was before this existed.
+monitor_read_sessions() {
+  local f line sid job
+  PARKED_BY_SID=" "; SID_BY_JOB=" "
+  [ -d "$SESSION_DIR" ] || return 0
+  for f in "$SESSION_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    # Not `read ... || continue`: these files carry no trailing newline, so read
+    # reports failure on the very line it just handed us.
+    line=""
+    IFS= read -r line < "$f" || true
+    [ -n "$line" ] || continue
+    monitor_json_str "$line" sessionId || continue
+    sid=$JSTR
+    monitor_json_str "$line" parkedJobId && PARKED_BY_SID+="$sid:$JSTR "
+    monitor_json_str "$line" jobId && SID_BY_JOB+="$JSTR:$sid "
+  done
+  return 0
+}
+
+LOOKUP=""
+monitor_index_get() { # value for $2 in index $1, or ""
+  local rest
+  LOOKUP=""
+  case $1 in
+    *" $2:"*) rest=${1#*" $2:"}; LOOKUP=${rest%% *} ;;
+  esac
+}
+
+# Where the session in this pane has parked its work, if it has: the prefix its
+# files are under, or "" to stay with the pane's own.
+PARKED_BASE=""
+monitor_parked_base() {
+  local sid=$1 job cand
+  PARKED_BASE=""
+  [ -n "$sid" ] || return 0
+  monitor_index_get "$PARKED_BY_SID" "$sid"; job=$LOOKUP
+  [ -n "$job" ] || return 0
+  monitor_index_get "$SID_BY_JOB" "$job"; sid=$LOOKUP
+  [ -n "$sid" ] || return 0
+  cand="$MONITOR_DIR/sess-$sid"
+  # Only once it has exported something. A job that has finished, or one on a
+  # machine where the exporters are not installed, leaves nothing here -- and the
+  # pane's own numbers, old as they are, are then the best there is.
+  { [ -r "$cand.state" ] || [ -r "$cand.meta" ]; } && PARKED_BASE=$cand
+  return 0
+}
+
+# How many subagents the pane's session has in flight: one empty file per agent,
+# left in $base.agents by monitor-hook.sh on SubagentStart and removed on
+# SubagentStop. A glob, so it costs no forks -- and no arithmetic on our side,
+# since the hook has already done the counting by naming the files.
+#
+# Not aged like the state file. A session that spawns five background agents and
+# goes quiet waiting on them stops writing state long before they finish, and
+# expiring the count would blank it on exactly the sessions it is there for. What
+# guards it instead is the pane: a leftover directory can only be read as this
+# session's if Claude is still up in that pane, and monitor_collect drops the
+# count for a pane that is not running one.
+AGENT_N=0
+monitor_count_agents() {
+  local f
+  AGENT_N=0
+  for f in "$1"/*; do
+    [ -e "$f" ] || continue
+    AGENT_N=$((AGENT_N + 1))
+  done
+}
+
 # Fills the X_* arrays for every session.
 monitor_read_exports() {
   local i n=${#SESSIONS[@]} now base limts=0 subc=0 apic=0 overc=0 allc=0
   local seen_sub="" seen_api="" seen_any=""
-  X_STATE=(); X_DETAIL=(); X_CTX=(); X_COST=(); X_COSTF=()
+  X_STATE=(); X_DETAIL=(); X_CTX=(); X_COST=(); X_COSTF=(); X_AGENTS=()
   X_LIM5=""; X_LIM7=""; X_RST5=""; X_RST7=""
   X_COST_SUB=""; X_COST_API=""; X_COST_OVER=""; X_COST_ALL=""; X_NOTICE=""
+  X_AGENT_ALL=0
   i=0
   while [ "$i" -lt "$n" ]; do
     X_STATE+=(""); X_DETAIL+=(""); X_CTX+=(""); X_COST+=(""); X_COSTF+=("")
+    X_AGENTS+=(0)
     i=$((i + 1))
   done
   [ "$n" -gt 0 ] && [ -d "$MONITOR_DIR" ] || return 0
 
   now=$MON_NOW
   [ "$now" -gt 0 ] 2>/dev/null || return 0
+  monitor_read_sessions
   i=0
   while [ "$i" -lt "$n" ]; do
     base="$MONITOR_DIR/${SERVER_PID}-${P_PANE[$i]#%}"
+
+    # Which session is in this pane, and whether what it is showing is really
+    # somewhere else -- see the parked jobs section. The state file is asked first
+    # because it exists from a session's very first event, where the metadata one
+    # waits for a status line to render; both carry the id.
+    KV_SESSION=""
+    monitor_read_kv "$base.state" || true
+    [ -n "$KV_SESSION" ] || monitor_read_kv "$base.meta" || true
+    monitor_parked_base "$KV_SESSION"
+    [ -n "$PARKED_BASE" ] && base=$PARKED_BASE
+
+    monitor_count_agents "$base.agents"
+    X_AGENTS[$i]=$AGENT_N
 
     KV_STATE=""; KV_DETAIL=""; KV_TS=0
     if monitor_read_kv "$base.state" &&
@@ -1064,10 +1195,11 @@ term_size() { # -> "rows cols"
 }
 
 # Width of every column before the detail, which the padding and the truncation
-# both have to agree on: 2 + key 1 + 2 + name 23 + 1 + state 9 + 1 + ctx 4 + 1 +
-# cost 8 + 2. Kept in one place because getting it wrong by one leaves the
-# highlight bar short of the right edge, which is invisible until you look for it.
-MON_PREFIX=54
+# both have to agree on: 2 + key 1 + 2 + name 23 + 1 + state 9 + 1 + agents 3 +
+# 1 + ctx 4 + 1 + cost 8 + 2. Kept in one place because getting it wrong by one
+# leaves the highlight bar short of the right edge, which is invisible until you
+# look for it.
+MON_PREFIX=58
 
 SESSIONS=()
 SEL=0          # cursor position in SESSIONS
@@ -1177,7 +1309,11 @@ monitor_collect() {
       ask)   N_NEED=$((N_NEED + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       busy)  N_WORK=$((N_WORK + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       draft|idle) N_CLAUDE=$((N_CLAUDE + 1)) ;;
+      # No Claude in this pane, so any markers left in it are from one that has
+      # since gone -- killed before SessionEnd, or the whole tmux server with it.
+      *) X_AGENTS[$i]=0 ;;
     esac
+    X_AGENT_ALL=$((X_AGENT_ALL + ${X_AGENTS[$i]:-0}))
     i=$((i + 1))
   done
 }
@@ -1186,12 +1322,12 @@ monitor_collect() {
 # row with printf -v, so a keystroke that only moves the cursor costs a redraw and
 # nothing else.
 monitor_draw() {
-  local h w i n state detail maxd pad row out="" hdr name ctx cost mark
+  local h w i n state detail maxd pad row out="" hdr name ctx cost mark agents
   read -r h w <<<"$(term_size)"
 
   # What every column before the detail takes: two spaces, the key, two spaces,
-  # the name at 23, a space, the state at 9, a space, the context at 4, a space,
-  # the cost at 8, and two more spaces.
+  # the name at 23, a space, the state at 9, a space, the agent count at 3, a
+  # space, the context at 4, a space, the cost at 8, and two more spaces.
   maxd=$((w - MON_PREFIX))
   [ "$maxd" -lt 12 ] && maxd=12
 
@@ -1214,6 +1350,14 @@ monitor_draw() {
     # Blank, again, rather than $0.00 for a session that has not reported --
     # nothing spent and nothing known are different things.
     printf -v cost '%8s' "${X_COSTF[$i]}"
+    # Subagents in flight, "5a". Blank at zero: a bare 0 in every row would be
+    # three columns of nothing on a machine that never runs one. The suffix is
+    # what makes a small number next to the state read as a count of agents
+    # rather than as another percentage, and it is ASCII because printf pads this
+    # by bytes.
+    agents='   '
+    [ "${X_AGENTS[$i]:-0}" -gt 0 ] 2>/dev/null &&
+      printf -v agents '%3s' "${X_AGENTS[$i]}a"
     monitor_state_style "$state"
     if [ "$i" = "$SEL" ]; then
       # The cursor's row goes in reverse video, with no inner resets -- one would
@@ -1224,15 +1368,19 @@ monitor_draw() {
       # glyph cannot skew them.
       pad=$((w - MON_PREFIX - ${#detail}))
       [ "$pad" -lt 0 ] && pad=0
-      printf -v row '%s▸ %s  %-23s %s %s %s  %s%*s%s' \
+      printf -v row '%s▸ %s  %-23s %s %s %s %s  %s%*s%s' \
         "$C_REV" "${KEYS:$i:1}" \
-        "$name" "$STATE_TEXT" "$ctx" "$cost" \
+        "$name" "$STATE_TEXT" "$agents" "$ctx" "$cost" \
         "$detail" "$pad" '' "$C_RST"
     else
-      printf -v row '  %s%s%s  %-23s %s%s%s %s%s %s%s  %s%s%s' \
+      # The agent count is the one column here that is not dim. A fleet running
+      # under a session is worth seeing from across the room, and it is the same
+      # cyan as "working" because that is what it means.
+      printf -v row '  %s%s%s  %-23s %s%s%s %s%s%s %s%s %s%s  %s%s%s' \
         "$C_BOLD" "${KEYS:$i:1}" "$C_RST" \
         "$name" \
         "$STATE_COLOR" "$STATE_TEXT" "$C_RST" \
+        "$C_CYA" "$agents" "$C_RST" \
         "$C_DIM" "$ctx" "$cost" "$C_RST" \
         "$C_DIM" "$detail" "$C_RST"
     fi
@@ -1279,8 +1427,13 @@ monitor_draw() {
     hdr=" MONITOR  no sessions found"
     out="  nothing to monitor yet$T_EL"$'\n'
   else
-    printf -v hdr ' MONITOR  %d sessions  %d claude  %d working  %d need you  refresh %ss' \
-      "$n" "$N_CLAUDE" "$N_WORK" "$N_NEED" "$INTERVAL"
+    printf -v hdr ' MONITOR  %d sessions  %d claude  %d working  %d need you' \
+      "$n" "$N_CLAUDE" "$N_WORK" "$N_NEED"
+    # Only when there are any. Unlike the counts before it, this one is about
+    # work the fleet is doing rather than about the sessions themselves, and a
+    # standing "0 agents" would be a word about nothing on most machines.
+    [ "$X_AGENT_ALL" -gt 0 ] 2>/dev/null && hdr="$hdr  $X_AGENT_ALL agents"
+    hdr="$hdr  refresh ${INTERVAL}s"
     # Limits and spend go up here, not in a row: the limits are account-wide, so
     # every session reports the same pair and a per-row copy would say nothing.
     # Kept to ASCII -- printf pads this bar by bytes, so a multibyte glyph would

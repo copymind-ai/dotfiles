@@ -86,7 +86,7 @@ cat > "$TMP/full.json" <<'EOF'
   "statusLine": { "type": "command", "command": "~/bin/their-statusline.sh" },
   "hooks": {
     "PostToolUse": [ { "matcher": "Edit", "hooks": [ { "type": "command", "command": "~/bin/prettier.sh" } ] } ],
-    "SubagentStop": [ { "hooks": [ { "type": "command", "command": "~/bin/notify.sh" } ] } ]
+    "TaskCompleted": [ { "hooks": [ { "type": "command", "command": "~/bin/notify.sh" } ] } ]
   }
 }
 EOF
@@ -125,7 +125,7 @@ assert_eq "their matcher is preserved verbatim" \
   "Edit" "$(jq -r '.hooks.PostToolUse[0].matcher' "$TMP/full.out")"
 assert_eq "an event we do not define is left exactly as it was" \
   "~/bin/notify.sh" \
-  "$(jq -r '[.hooks.SubagentStop[].hooks[].command] | join(" ")' "$TMP/full.out")"
+  "$(jq -r '[.hooks.TaskCompleted[].hooks[].command] | join(" ")' "$TMP/full.out")"
 
 for ev in $(jq -r '.hooks | keys[]' "$SHARED"); do
   assert_eq "our hook is present on $ev" "1" \

@@ -25,8 +25,8 @@ dotfiles/
 ├── claude/
 │   ├── settings.json              # Shared: statusLine + hooks only, nothing else
 │   ├── merge-settings.sh          # Merges the above into an existing config
-│   ├── statusline.sh              # Claude Code status line + context/cost export + spend ledger
-│   ├── monitor-hook.sh            # Claude Code hooks -> session state export
+│   ├── statusline.sh              # Status line + context/cost export + spend ledger
+│   ├── monitor-hook.sh            # Claude Code hooks -> session state + subagent count
 │   └── skills/                    # User-level skills, symlinked one by one
 ├── ghostty/.config/ghostty/
 ├── neovim/.config/nvim/
@@ -202,15 +202,16 @@ Notes:
 its Claude window is doing right now.
 
 ```
- MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s  5h 17% to 5:20PM  7d 28% to Tue 11PM
+ MONITOR  15 sessions  11 claude  1 working  1 need you  5 agents  refresh 2s  5h 17% to 5:20PM  7d 28% to Tue 11PM
 
   1  admin                   shell
-  2  article                 draft       12%    $4.10  let's draft §3 now
-▸ 3  copyclaw                NEEDS YOU   61%   $22.65  Do you want to make this edit to auth.ts?
-  4  dotfiles                working     40%   $40.90  Cooking…
-  5  graspen-course-ai       idle        35%   $39.75  Check AI-at-work course generation status
+  2  article                 draft           12%    $4.10  let's draft §3 now
+▸ 3  copyclaw                NEEDS YOU       61%   $22.65  Do you want to make this edit to auth.ts?
+  4  dotfiles                working         40%   $40.90  Cooking…
+  5  graspen-ci              idle        5a  14%   $41.61  Fix CI failure for course translation
+  6  graspen-course-ai       idle            35%   $39.75  Check AI-at-work course generation status
   ...
-  f  zz-other                other              sleep
+  f  zz-other                other                  sleep
                                total active  $499.01  sub ~$487.01   api $12.00     extra ~$4.25
                                       today  $541.20  sub ~$521.20   api $20.00
                                          7d $1180.05  sub ~$1140.05  api $40.00
@@ -245,6 +246,13 @@ Two columns come from the status line rather than the screen: how much of the
 context window that session has used, and what it has cost. Both are blank for a
 session that has not answered yet or has no exporter installed — blank means
 unknown, which is not the same as zero.
+
+`5a` is the third: how many subagents that session has in flight, and `5 agents`
+in the header is the fleet's. Blank at zero, so it only shows up where something
+is actually running — see [counting subagents](#counting-subagents). It is the one
+number here that says nothing about the state beside it: a session that has handed
+five background agents their work and gone quiet reads `idle 5a`, and that is
+right. It will answer you now; its fleet is still busy.
 
 Under the rows is one line per window, each totalling the cost column over a
 longer reach than the one above it:
@@ -351,11 +359,110 @@ and the arithmetic under-counts. Treat `extra` as a floor, and
 `CLAUDE_OVERAGE_AT` (default 100) as the knob if the percentage behaves
 differently.
 
+### Counting subagents
+
+`5a` in a row is how many subagents that session has in flight, and `5 agents` in
+the header is the fleet's.
+
+There is nothing on the screen to count: Claude's fleet view lists agents only
+while it is open, and it is not on screen at all in a session nobody is looking at.
+Claude's own events do carry it. `SubagentStart` and `SubagentStop` each name the
+agent they are about, and `Stop` and `SubagentStop` both carry the whole
+background-task registry.
+
+So `claude/monitor-hook.sh` keeps a directory per pane,
+`~/.claude/monitor/<server pid>-<pane>.agents`, holding one empty file named for
+each agent in flight. The count is however many files are in it, which costs the
+monitor a glob and no forks at all. Files rather than a number in a file because
+five agents spawned in one turn is five copies of the hook running at once, and a
+number would need a read, an add and a write between them.
+
+The registry is what keeps it honest, at two points:
+
+- **Every `Stop`** reconciles the directory against it in both directions. `Stop`
+  fires once the main loop has finished, so nothing foreground can still be up: a
+  marker with nothing behind it is a leftover — an agent killed before its stop
+  event, or a session already running a fleet when the hooks were installed — and
+  can go.
+- **Every `SubagentStop`** adopts anything the registry names that has no marker,
+  and drops nothing but the agent that just stopped. Additive only, because that
+  snapshot excludes foreground agents and removing on it would take out every
+  foreground agent running in parallel. This is what stops a catch-up from waiting
+  out a turn — under a fleet, a session can stay busy for an hour.
+
+Unlike the exported state, the count is never aged out. A session that hands five
+background agents their work and goes quiet stops writing state long before they
+finish, and expiring the count would blank it on exactly the sessions it exists
+for. What guards it instead is the pane: a pane with no Claude in it counts
+nothing, whatever is left in its directory, so a fleet whose session was killed
+outright stops being reported rather than sitting there forever.
+
+Worth knowing:
+
+- **A stopped clock in the fleet view is not a finished agent.** It is idle between
+  turns and can be woken with a queued message, which restarts its clock. Claude's
+  registry still counts it, so this does too — the count and the fleet list agree.
+- **It needs the hooks.** A session running on a machine without them counts
+  nothing. A session that was already up when they were merged in does pick them
+  up — Claude Code re-reads `settings.json` — but a fleet it launched before that
+  is only counted once its next turn ends and the reconcile finds it.
+- **A fleet under a parked job is counted too**, by the same markers, filed under
+  the background session instead of the pane — [parked jobs](#parked-jobs).
+- **Subagents only.** Background shells, MCP tasks and monitors sit in the same
+  registry and are deliberately left out; Claude's own footer already counts those
+  ("6 shells, 2 monitors").
+- **A nested agent** — one an agent spawned itself — is counted while it runs, but
+  a reconcile may lose sight of it if the registry does not carry nested tasks, in
+  which case the count runs short until that agent stops.
+
 Which pane each session is judged by, in order: one actually running Claude, else
-one in a window named `claude`, else the session's active pane. Claude Code
+one in a window named `claude`, else the session's active pane. If the Claude in
+that pane has parked its work on a background session, the row follows it — see
+[parked jobs](#parked-jobs). Claude Code
 reports its version as its process name (`2.1.223`), which is how it is
 recognised — so a window auto-renamed away from `claude` is still found, and so
 is Claude sitting in the half of a split that is not focused.
+
+### Parked jobs
+
+What is in a pane is not always what is doing the work. Handed something long,
+Claude parks it: a background session starts under its daemon and the pane shows
+that session instead. The daemon does not pass `$TMUX_PANE` on, so the session
+actually working — spending the money, running the agents — has no pane to be
+keyed by, and until this it exported nothing at all. The row then showed the
+*other* session's last numbers, frozen at the moment it parked, which is not stale
+by a little: it is the wrong session. One here read `8% $1.44` while its own status
+line said `ctx 14% · $70.46`.
+
+Claude keeps a registry that closes the gap, one small JSON file per running
+session in `~/.claude/sessions`. The session in the pane carries a `parkedJobId`,
+and the session doing the work carries the matching `jobId` beside its own session
+id — which is the key its exports are filed under:
+
+```
+pane %92 → its session id → parkedJobId → jobId → sess-<id>.state / .meta / .agents
+```
+
+So both exporters now fall back to keying by session id when there is no pane, and
+the monitor reads the registry once a tick into two flat indexes (bash 3.2 here has
+no associative arrays) and follows that chain per pane. State, context, cost and
+the agent count all come from whichever session the pane is really showing. A few
+dozen one-line files read by bash itself, so it costs no forks.
+
+Worth knowing:
+
+- **The link needs the pane's own export to exist**, since that is where the
+  session id comes from. The hook writes one from a session's first event, so this
+  is only ever missing where the exporters are not installed.
+- **A job that has exported nothing is not followed.** It has finished, or it runs
+  where the exporters do not — and the pane's own numbers, old as they are, are
+  then the best there is.
+- **`active` totals the parked session, not the pane's.** One row, one session; the
+  pane session's own spend is still in the ledger, so no day loses it.
+- **A background session that never gets `SessionEnd`** leaves its `sess-*` files
+  behind. They are a few hundred bytes and nothing reads them once the registry
+  stops naming them; `rm ~/.claude/monitor/sess-*` while nothing is parked is the
+  whole cleanup story.
 
 ### How the state is worked out
 
@@ -376,10 +483,12 @@ empty box with a dim suggestion of what to ask next. The cursor settles that too
 `capture-pane -pe` spent to check whether that text is dim.
 
 **Claude's own events**, via `claude/monitor-hook.sh`, which every hook runs and
-which leaves a state file per pane in `~/.claude/monitor`. `claude/statusline.sh`
-adds context and cost to the same place, since neither is on the screen at all.
-Both key their files by tmux server pid and pane id, which is what `$TMUX_PANE`
-in their environment makes possible.
+which leaves a state file per pane in `~/.claude/monitor`, plus the count of
+subagents that pane has running — [counting subagents](#counting-subagents).
+`claude/statusline.sh` adds context and cost to the same place, since neither is
+on the screen at all. Both key their files by tmux server pid and pane id, which
+is what `$TMUX_PANE` in their environment makes possible — or by session id where
+there is no pane, which is how a [parked job](#parked-jobs) is found.
 
 Neither source overrules the other:
 
@@ -407,9 +516,11 @@ Notes:
 - Tunables: `MONITOR_INTERVAL` (seconds, default 2), `MONITOR_WINDOW` (preferred
   window name, default `claude`), `MONITOR_FILTER` (regex; list only matching
   sessions, e.g. `^graspen-`), `MONITOR_SESSION` (default `monitor`),
-  `CLAUDE_MONITOR_DIR` (default `~/.claude/monitor`), `MONITOR_STALE` (seconds an
-  exported state stays trusted, default 90), `CLAUDE_OVERAGE_AT` (window
-  percentage counted as exhausted, default 100).
+  `CLAUDE_MONITOR_DIR` (default `~/.claude/monitor`), `CLAUDE_SESSION_DIR`
+  (Claude's own session registry, read to follow parked jobs, default
+  `~/.claude/sessions`), `MONITOR_STALE` (seconds an exported state stays trusted,
+  default 90), `CLAUDE_OVERAGE_AT` (window percentage counted as exhausted,
+  default 100).
 - `prefix + M` replaces tmux's default "clear marked pane"; `prefix + m` still
   toggles a mark.
 
