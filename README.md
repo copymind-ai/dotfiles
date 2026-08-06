@@ -22,6 +22,12 @@ Team configuration files for local development.
 
 ```
 dotfiles/
+├── claude/
+│   ├── settings.json              # Shared: statusLine + hooks only, nothing else
+│   ├── merge-settings.sh          # Merges the above into an existing config
+│   ├── statusline.sh              # Claude Code status line + context/cost export
+│   ├── monitor-hook.sh            # Claude Code hooks -> session state export
+│   └── skills/                    # User-level skills, symlinked one by one
 ├── ghostty/.config/ghostty/
 ├── neovim/.config/nvim/
 ├── scripts/
@@ -196,15 +202,16 @@ Notes:
 its Claude window is doing right now.
 
 ```
- MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s
+ MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s  5h 17% to 5:20PM  7d 28% to Tue 11PM
 
   1  admin                   shell
-  2  article                 draft      let's draft §3 now
-▸ 3  copyclaw                NEEDS YOU  Do you want to make this edit to auth.ts?
-  4  dotfiles                working    Cooking…
-  5  graspen-course-ai       idle       2 agents
+  2  article                 draft       12%    $4.10  let's draft §3 now
+▸ 3  copyclaw                NEEDS YOU   61%   $22.65  Do you want to make this edit to auth.ts?
+  4  dotfiles                working     40%   $40.90  Cooking…
+  5  graspen-course-ai       idle        35%   $39.75  Check AI-at-work course generation status
   ...
-  f  zz-other                other      sleep
+  f  zz-other                other              sleep
+                                       total  $499.01  sub ~$499.01
 
   j/k move   enter jump   1-9/a-z jump directly   r refresh   q quit
 ```
@@ -220,37 +227,198 @@ cursor — `h`/`l` do nothing here, the list being one column — and so are `q`
 `r`. The cursor stays on its session across refreshes, even as sessions come and
 go and the keys shift under it.
 
-| State       | Means                                                    |
-| ----------- | -------------------------------------------------------- |
-| `working`   | Claude is generating (`esc to interrupt` on screen)      |
-| `NEEDS YOU` | waiting on a permission or plan prompt                   |
-| `draft`     | text typed into the prompt but not sent                  |
-| `idle`      | up with an empty prompt (detail shows background agents) |
-| `shell`     | just a shell                                             |
-| `other`     | something else running; detail names the command         |
-| `gone`      | session or window disappeared                            |
+| State       | Means                                            |
+| ----------- | ------------------------------------------------ |
+| `working`   | Claude is generating                             |
+| `NEEDS YOU` | waiting on a permission, plan or select prompt   |
+| `draft`     | text typed into the prompt but not sent          |
+| `idle`      | up with an empty prompt; detail is its last task |
+| `shell`     | just a shell                                     |
+| `other`     | something else running; detail names the command |
+| `gone`      | session or pane disappeared                      |
 
-Which window each session is judged by, in order: one actually running Claude,
-else one named `claude`, else the session's active window. Claude Code reports its
-version as its process name (`2.1.222`), which is how it is recognised — so a
-window auto-renamed away from `claude` is still found.
+Two columns come from the status line rather than the screen: how much of the
+context window that session has used, and what it has cost. Both are blank for a
+session that has not answered yet or has no exporter installed — blank means
+unknown, which is not the same as zero.
+
+The line under the rows totals the cost column:
+
+- **`total $499.01`** — every session added up.
+- **`sub ~$499.01`** — what the subscription absorbed, priced at API rates.
+  **This is not a bill.** On a subscription nothing is charged for it; the window
+  percentages are the real constraint. The tilde is there because it is an
+  estimate of a price nobody charged.
+- **`api $12.34`** — appears only when some session is authenticated to an
+  API-billed account instead of the subscription. That figure is money.
+- **`extra ~$4.25`** — spend attributed to a window that was already full. Shown
+  once there is some.
+
+Sessions are sorted into `sub`/`api` by whether Claude sends them `rate_limits`,
+which only goes to a Claude.ai subscription. A personal subscription never
+crosses over on its own: hitting the limit stops the session and tells you to run
+`/login` for an API-billed account, so anything landing in `api` got there
+because someone chose it. A session that has not answered yet counts toward
+neither.
+
+The header keeps what is account-wide, since every session reports the same pair:
+
+- **`5h 17% to 5:20PM`** — the rolling five-hour subscription window and when it
+  clears. This is the one that bites when several sessions run at once; it falls
+  on its own as older usage rolls out of the window.
+- **`7d 28% to Tue 11PM`** — the weekly window. Only really moves one way until
+  it resets.
+- **`5h 100% FULL`** — the window is exhausted. Utilization is clamped upstream,
+  so 100 is as high as it goes.
+- **`** You're close to your usage limit`** — a limit notice read off some
+  session's screen.
+
+### Extra usage
+
+The `extra` column is inferred, from two independent sides:
+
+- **Arithmetic**, in `claude/statusline.sh`: each run compares the session's cost
+  against its own last export and files the difference under whether a window
+  read full when it was earned. Handles a window resetting mid-session, and a
+  `/clear` taking the cost back to zero.
+- **The screen**, in `monitor_scan_notice()`: the notices Claude renders near the
+  overage cap or after a refusal — "close to your usage limit", "out of extra
+  usage", "hit your monthly spend limit" — matched as whole phrases, and only in
+  the bottom few rows, since the transcript above is full of sentences that would
+  otherwise match.
+
+One caveat once extra usage is switched on. The API can report the weekly window
+as `seven_day_overage_included`, with the overage headroom folded into the
+denominator — in which case it may never read 100 while overage is being spent,
+and the arithmetic under-counts. Treat `extra` as a floor, and
+`CLAUDE_OVERAGE_AT` (default 100) as the knob if the percentage behaves
+differently.
+
+Which pane each session is judged by, in order: one actually running Claude, else
+one in a window named `claude`, else the session's active pane. Claude Code
+reports its version as its process name (`2.1.223`), which is how it is
+recognised — so a window auto-renamed away from `claude` is still found, and so
+is Claude sitting in the half of a split that is not focused.
+
+### How the state is worked out
+
+Two sources, because neither sees everything.
+
+**The screen**, via `capture-pane`. What matters is not the wording but *where
+Claude parked the cursor*, which says which widget has the keyboard: the input
+box holds it after the prompt glyph, and a dialog moves it onto the selected row.
+Wording alone will not separate them — "Do you want …" appears in Claude's own
+replies and in the transcript of prompts already answered. The separator after
+the glyph does: the input box uses a non-breaking space, every dialog a plain
+one. Position does not, because the dialog `AskUserQuestion` puts up is not
+indented and its selected row sits at column 0 looking exactly like an input box.
+
+Text on the prompt row is not proof anyone typed it, either: Claude fills an
+empty box with a dim suggestion of what to ask next. The cursor settles that too
+— typing moves it past the glyph — and only in the ambiguous case is one extra
+`capture-pane -pe` spent to check whether that text is dim.
+
+**Claude's own events**, via `claude/monitor-hook.sh`, which every hook runs and
+which leaves a state file per pane in `~/.claude/monitor`. `claude/statusline.sh`
+adds context and cost to the same place, since neither is on the screen at all.
+Both key their files by tmux server pid and pane id, which is what `$TMUX_PANE`
+in their environment makes possible.
+
+Neither source overrules the other:
+
+- `NEEDS YOU` — whichever notices first. Usually the screen: `Notification` lags
+  the prompt by about six seconds, a refresh tick is two.
+- `draft` — the screen only. No event fires for typing.
+- `working` / `idle` — the events, when fresh. They know a turn has started
+  before any of it reaches the screen.
+- `shell` / `other` / `gone` — the screen, and final.
+
+A session with no exporter installed — another machine, or one started before it
+was — loses the context and cost columns and nothing else. An exported state
+older than `MONITOR_STALE` is ignored, so a Claude killed before `SessionEnd`
+cannot leave a row stuck on `working`.
 
 Notes:
 
-- State is derived by polling `capture-pane`, so the monitor never attaches a
-  client to the monitored sessions and cannot resize or disturb them.
-- `N agents` in Claude's footer stays on screen while it is idle, so it is
-  reported as detail, not as a busy state.
-- There is no time column. It used to show the age of the window's last output,
-  which is worthless for exactly the rows you care about: a working session
-  streams constantly, so it always read `0s` no matter how long the turn had run.
-- The patterns live in `monitor_classify()` in `tmux/monitor.sh` — the one place to
-  fix if a Claude Code release reworks its footer.
+- Everything is read by polling, so the monitor never attaches a client to the
+  monitored sessions and cannot resize or disturb them.
+- One `list-panes` covers every session. A tick over fifteen sessions costs
+  ~100ms, and every session is sampled at the same instant.
+- Claude Code UI strings live in `monitor_classify()` and `monitor_busy_titles()`
+  in `tmux/monitor.sh` — the places to fix if a release reworks the footer or the
+  title.
 - Tunables: `MONITOR_INTERVAL` (seconds, default 2), `MONITOR_WINDOW` (preferred
   window name, default `claude`), `MONITOR_FILTER` (regex; list only matching
-  sessions, e.g. `^graspen-`), `MONITOR_SESSION` (default `monitor`).
+  sessions, e.g. `^graspen-`), `MONITOR_SESSION` (default `monitor`),
+  `CLAUDE_MONITOR_DIR` (default `~/.claude/monitor`), `MONITOR_STALE` (seconds an
+  exported state stays trusted, default 90), `CLAUDE_OVERAGE_AT` (window
+  percentage counted as exhausted, default 100).
 - `prefix + M` replaces tmux's default "clear marked pane"; `prefix + m` still
   toggles a mark.
+
+## Claude Code config
+
+`claude/` holds the Claude Code setup: settings, the two exporter scripts the
+[session monitor](#session-monitor) reads, and user-level `skills/`. The scripts
+and each skill are symlinked. Settings are **merged**, because Claude writes to
+that file itself — `/model`, permission changes, enabled plugins — and a symlink
+would drag every runtime toggle into git as a dirty working tree.
+
+`claude/settings.json` holds **exactly two keys**: `statusLine` and `hooks`.
+Those are what the session monitor reads, so they are the only things worth
+sharing. Everything else in a Claude settings file belongs to whoever owns the
+laptop and is never tracked:
+
+| Shared, installed for everyone | Yours alone, never touched |
+| --- | --- |
+| `statusLine` | `editorMode`, `tui`, `model`, `enabledPlugins`, `extraKnownMarketplaces`, notifications |
+| `hooks` | `env` and its tokens |
+| | `permissions` — including `defaultMode` and the `skip*` prompts, which decide how much Claude does without asking |
+
+The merge only touches the keys it is given, so `./install.sh` on a colleague's
+machine gives them the monitor integration and changes nothing else. Their editor
+mode, model and permission posture survive every `git pull && ./install.sh`.
+
+The merge is `claude/merge-settings.sh`, runnable and testable on its own:
+
+```bash
+claude/merge-settings.sh <live.json> <shared.json>   # merged JSON on stdout
+```
+
+It refuses rather than damages — exit 1 on unreadable or invalid JSON, exit 2 if
+the shared file has grown an `env` block — and `install.sh` writes through a temp
+file, so a failure leaves the existing settings untouched.
+
+The two shared keys are applied differently:
+
+- **`statusLine` is replaced** — there is only one of it. If you already had a
+  custom one, the install says so and leaves the previous file at
+  `~/.claude/settings.json.bak`.
+- **`hooks` are appended per event**, so a colleague's own `PostToolUse`
+  formatter keeps running alongside ours. Entries pointing at our script are
+  removed first, so re-running never stacks duplicates.
+
+Paths inside are written as `~/.claude/…` rather than absolute, so the file is
+portable between machines and between users. Both the status line and hooks run
+their command through a shell, so the `~` expands.
+
+`tests/unit/04-claude-settings-merge.test.sh` covers the merge. Its main
+assertion is a property rather than a checklist: for every scalar leaf in the
+original config, outside the two keys we own, the merged result must hold the
+same value at the same path — which covers settings this repo has never heard of.
+It runs over a config containing something of everything, over the empty and
+near-empty cases, over this machine's real config if there is one, and three
+times in a row to prove the result converges. The detector itself is tested
+first, against a deliberately lossy pair, because "reports nothing lost" and
+"is broken" look identical from the outside.
+
+`tests/unit/03-no-secrets.test.sh` is the other backstop. It scans tracked and
+new-but-unignored files for credential-shaped tokens and for secret-named JSON
+keys with values, and it asserts the shared settings file contains nothing but
+`statusLine` and `hooks` — an allowlist, so widening what this repo pushes onto
+other laptops takes a deliberate edit to the test as well. The untracked half of
+the scan matters most: a secret is at its most dangerous in the moment before it
+is first committed.
 
 ## Testing
 
@@ -278,7 +446,11 @@ The install script will install all tools from the table above and symlink confi
 
 1. Move the config file/folder into the dotfiles repo, mirroring the home directory structure
 2. Add a `link` entry in `install.sh`
-3. Commit and push
+3. Run `./test.sh --unit` — it will refuse anything carrying a credential
+4. Commit and push
+
+Use `link` for step 2: it backs up whatever is already at the destination, and
+replaces an existing directory rather than creating the symlink inside it.
 
 ## Keeping in sync
 
