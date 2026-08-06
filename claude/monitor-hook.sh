@@ -22,7 +22,8 @@
 # stays at two forks: one jq, one mv.
 #
 # It also keeps the count of subagents a session has running, in a directory of
-# empty marker files named by agent id -- see the agents section below.
+# empty marker files named by agent id, and what each one spent as it finishes --
+# see the agents and subagent spend sections below.
 set -uo pipefail
 
 input=$(cat)
@@ -30,8 +31,8 @@ input=$(cat)
 # Joined on a unit separator, not @tsv: tab is IFS whitespace, so the empty
 # tool_name and message that most of these events carry would collapse and shift
 # the timestamp into the wrong variable.
-event='' tool='' message='' now=0 agent='' agent_live='' session=''
-IFS=$'\037' read -r event tool message now agent agent_live session < <(
+event='' tool='' message='' now=0 agent='' agent_live='' session='' apath=''
+IFS=$'\037' read -r event tool message now agent agent_live session apath < <(
   printf '%s' "$input" | jq -r '[
     (.hook_event_name // ""),
     (.tool_name // ""),
@@ -44,7 +45,13 @@ IFS=$'\037' read -r event tool message now agent agent_live session < <(
     # makes the reconcile below possible.
     ([.background_tasks[]? | select(.type == "subagent") | .id] | join(" ")),
     # Which session this is, for a run that has no pane to be keyed by.
-    (.session_id // "")
+    (.session_id // ""),
+    # Where the finished subagent left its transcript, on SubagentStop -- the
+    # only place its token usage can be read from. Last of the fields, because
+    # it is the one that could hold a newline: read stops at one, and anything
+    # after it in the record would be lost. Nothing is built from this but a
+    # read, and a path that does not open simply skips the pricing below.
+    (.agent_transcript_path // "")
   ] | map(tostring) | join("\u001f")' 2>/dev/null
 ) || true
 
@@ -141,11 +148,86 @@ reconcile_agents() {
   adopt_agents
 }
 
+# --- subagent spend -----------------------------------------------------------
+#
+# What a subagent cost is nowhere in the events, and nowhere in the status line
+# either: the session's own total_cost_usd already has every agent folded into
+# it, with nothing to pull the agent's share back out by. What SubagentStop does
+# carry is the finished agent's transcript, and that holds a usage block per
+# assistant message -- so the cost is recoverable here, once, at the moment the
+# agent stops, and nowhere cheaper afterwards.
+#
+# Priced rather than kept in tokens, because tokens of different kinds are not
+# comparable: a cache read is a tenth of a fresh input token and a cache write is
+# more than one, so a token total would say almost nothing about the money.
+#
+# Appended, one line per agent, rather than added into a running total -- for the
+# same reason the markers are files. Several agents stop at once, and a read, an
+# add and a write between them would lose one. A short line opened for append
+# lands whole; the monitor does the adding.
+sfile="$dir/$key.aspend"
+
+# Cents for the transcript at $1, on stdout. Two forks, on an event that fires
+# once per agent rather than once per tool call.
+#
+# Deduplicated by message id: one assistant message with three content blocks is
+# three lines in the transcript, each repeating that message's usage, and summing
+# them as they come would charge it three times.
+agent_cents() {
+  jq -r '
+    select(.type == "assistant") | .message // empty
+    | select(.usage != null)
+    | [ (.id // ""), (.model // ""),
+        (.usage.input_tokens // 0),
+        # The 5m/1h split only exists on newer transcripts; older ones have the
+        # one flat figure, which was all 5m when it was written.
+        (.usage.cache_creation.ephemeral_5m_input_tokens
+           // .usage.cache_creation_input_tokens // 0),
+        (.usage.cache_creation.ephemeral_1h_input_tokens // 0),
+        (.usage.cache_read_input_tokens // 0),
+        (.usage.output_tokens // 0) ]
+    | @tsv' "$1" 2>/dev/null |
+  awk -F'\t' '
+    # Dollars per million tokens, by family rather than by exact id: the ids
+    # carry suffixes that say nothing about the rate -- "[1m]", a vendor prefix,
+    # a version tail -- and a model released next month is priced like its
+    # siblings instead of being dropped. Sonnet is at its standard rate, so an
+    # agent on it reads high until the introductory rate lapses on 2026-08-31.
+    #
+    # Server tool calls (web search) are not in here: they are billed per request
+    # rather than per token, and the transcript counts them separately. A search-
+    # heavy agent therefore reads a little low.
+    BEGIN {
+      IN["fable"]  = 10; OUT["fable"]  = 50
+      IN["opus"]   = 5;  OUT["opus"]   = 25
+      IN["sonnet"] = 3;  OUT["sonnet"] = 15
+      IN["haiku"]  = 1;  OUT["haiku"]  = 5
+    }
+    function family(m) {
+      if (m ~ /fable|mythos/) return "fable"
+      if (m ~ /sonnet/)       return "sonnet"
+      if (m ~ /haiku/)        return "haiku"
+      # Opus by name, and anything unrecognized along with it: a model this does
+      # not know is far likelier to be a new Opus than to be free.
+      return "opus"
+    }
+    $1 != "" && seen[$1]++ { next }
+    {
+      f = family($2); i = IN[f] / 1000000; o = OUT[f] / 1000000
+      # Each kind of token at its own multiple of the input rate, rather than all
+      # of them at the input rate: that is the whole reason this is priced here.
+      c += $3 * i + $4 * i * 1.25 + $5 * i * 2 + $6 * i * 0.1 + $7 * o
+    }
+    END { printf "%d\n", int(c * 100 + 0.5) }
+  '
+}
+
 state=''
 detail=''
 case $event in
   # Whatever this pane counted belonged to the session that just ended in it.
-  SessionStart)      state=idle; rm -rf "$adir" 2>/dev/null ;;
+  SessionStart)      state=idle; rm -rf "$adir" 2>/dev/null
+                     rm -f "$sfile" 2>/dev/null ;;
   UserPromptSubmit)  state=busy ;;
   # The tool name is the best short answer to "working on what" that any of
   # these events carry, and it beats the title's summary for immediacy.
@@ -171,6 +253,16 @@ case $event in
   SubagentStop)
     id_ok "$agent" && rm -f "$adir/$agent" 2>/dev/null
     adopt_agents "$agent"
+    # And what it spent, which is only readable now. A transcript that is missing
+    # or unreadable, an older Claude that sends no path, a jq or awk that is not
+    # here: the count still works, and the money is simply not counted.
+    if [ -r "$apath" ]; then
+      cents=$(agent_cents "$apath" 2>/dev/null) || cents=''
+      case $cents in
+        ''|0|*[!0-9]*) ;;
+        *) printf '%s\n' "$cents" >> "$sfile" 2>/dev/null ;;
+      esac
+    fi
     exit 0
     ;;
   Notification)
@@ -184,7 +276,7 @@ case $event in
     esac
     ;;
   SessionEnd)
-    rm -f "$dir/$key.state" "$dir/$key.meta" 2>/dev/null
+    rm -f "$dir/$key.state" "$dir/$key.meta" "$sfile" 2>/dev/null
     rm -rf "$adir" 2>/dev/null
     exit 0
     ;;
