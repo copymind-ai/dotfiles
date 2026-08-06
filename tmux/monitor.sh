@@ -12,12 +12,20 @@
 # r refreshes now, q (or esc) quits.
 #
 # Every session is listed except the monitor itself. For each one it picks the
-# window to report on: a window actually running Claude, else one named
-# $MONITOR_WINDOW, else the session's active window.
+# pane to report on: a pane actually running Claude, else one in a window named
+# $MONITOR_WINDOW, else the session's active pane.
+#
+# What each session is doing is read off its screen. Where claude/statusline.sh
+# and claude/monitor-hook.sh are installed, they leave what the screen cannot
+# show -- context and cost, and state straight from Claude's own events -- in
+# $CLAUDE_MONITOR_DIR, and those are merged in. Sessions without them lose the
+# extra columns and nothing else.
 #
 # Tunables: MONITOR_INTERVAL (seconds, default 2), MONITOR_WINDOW (preferred
 # window name, default "claude"), MONITOR_FILTER (regex; only sessions matching
-# it are listed, default all), MONITOR_SESSION (default "monitor").
+# it are listed, default all), MONITOR_SESSION (default "monitor"),
+# CLAUDE_MONITOR_DIR (default ~/.claude/monitor), MONITOR_STALE (seconds an
+# exported state stays trusted, default 90).
 set -uo pipefail
 
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -27,6 +35,8 @@ MON=${MONITOR_SESSION:-monitor}
 INTERVAL=${MONITOR_INTERVAL:-2}
 MONITOR_WINDOW=${MONITOR_WINDOW:-claude}
 MONITOR_FILTER=${MONITOR_FILTER:-}
+MONITOR_DIR=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
+MONITOR_STALE=${MONITOR_STALE:-90}
 
 # Digits first (natural for the first handful), then letters. 'q' and 'r' are
 # left out on purpose -- they are quit and refresh -- and so are hjkl, which move
@@ -52,15 +62,12 @@ else
   C_RST=; C_BOLD=; C_DIM=; C_REV=; C_RED=; C_GRN=; C_YEL=; C_CYA=
 fi
 
-# --- sessions ---------------------------------------------------------------
+# --- snapshot ---------------------------------------------------------------
 
-# Sessions to list, alphabetical, the monitor itself excluded.
-monitor_sessions() {
-  tmux list-sessions -F '#{session_name}' 2>/dev/null |
-    grep -vx "$MON" |
-    { if [ -n "$MONITOR_FILTER" ]; then grep -E "$MONITOR_FILTER"; else cat; fi } |
-    sort
-}
+# Braille frames Claude spins in the pane title while it works. Only used when
+# perl is missing: the perl check in monitor_busy_titles covers the whole braille
+# block, so it survives Claude picking frames that are not in this list.
+BRAILLE_FRAMES='⠁⠂⠄⠈⠐⠠⡀⢀⠃⠆⠇⠋⠏⠙⠘⠸⠴⠦⠧⠹⠼⣀⣤⣶⣿'
 
 # Claude Code reports its version as the process name ("2.1.222"), so treat a
 # bare version and anything containing "claude" as Claude.
@@ -72,145 +79,767 @@ is_claude_cmd() {
   esac
 }
 
-# Window of a session to report on -> "window_id|pane_current_command".
-# Prefers the window actually running Claude over the one merely named for it:
-# the running process is the truth, and automatic-rename means the name often
-# is not "claude" at all.
-monitor_pick_window() {
-  local sess=$1 name id cmd act named="" claude="" active=""
-  while IFS='|' read -r name id cmd act; do
-    [ -n "$id" ] || continue
-    if [ -z "$claude" ] && is_claude_cmd "$cmd"; then claude="$id|$cmd"; fi
-    if [ -z "$named" ] && [ "$name" = "$MONITOR_WINDOW" ]; then named="$id|$cmd"; fi
-    if [ "$act" = 1 ]; then active="$id|$cmd"; fi
-  done < <(tmux list-windows -t "$sess" \
-             -F '#{window_name}|#{window_id}|#{pane_current_command}|#{window_active}' 2>/dev/null)
-  printf '%s' "${claude:-${named:-$active}}"
+# Runtimes Claude would surface as if it ever stopped renaming its process. On
+# their own these prove nothing -- half the world runs node -- so a pane only
+# counts as Claude this way when its title carries one of Claude's glyphs too.
+is_claude_host() {
+  case $1 in node|bun|deno|npm|npx) return 0 ;; *) return 1 ;; esac
 }
 
-# Visible text of a window's active pane, no escape sequences.
-monitor_capture() { tmux capture-pane -p -t "$1" 2>/dev/null; }
+# True when a title is one Claude wrote: "<braille frame> summary" while it
+# works, "✳ summary" once it stops. Only used to recognise a Claude pane, never
+# to decide busy -- monitor_busy_titles does that, and exactly. A title alone is
+# never enough: it is set by whatever last wrote to the pane and outlives it, so
+# shells sit there wearing Claude's last summary long after Claude has exited.
+title_is_claude() {
+  [ -n "${1:-}" ] || return 1
+  case $1 in '✳'*) return 0 ;; esac
+  case $BRAILLE_FRAMES in *"${1:0:1}"*) return 0 ;; esac
+  return 1
+}
+
+# Everything tmux knows about every pane, in one call.
+#
+# This used to be three calls per session -- list-windows, capture-pane, then
+# display-message for the title -- which cost a fork each and sampled each
+# session a few milliseconds apart. One list-panes also reports panes that are
+# not the active one, and that fixes a real blind spot: the old format could only
+# ever show the active pane's command, so a split window with Claude in its other
+# half read as a plain shell.
+#
+# cursor_x and cursor_y come along for free and are what the classifier leans on
+# hardest -- see monitor_classify.
+SNAP_SEP=$'\037'   # a control character cannot appear in a session name or title
+SNAP_FMT="#{pid}${SNAP_SEP}#{session_name}${SNAP_SEP}#{window_active}${SNAP_SEP}#{pane_id}\
+${SNAP_SEP}#{pane_active}${SNAP_SEP}#{cursor_x}${SNAP_SEP}#{cursor_y}\
+${SNAP_SEP}#{pane_current_command}${SNAP_SEP}#{window_name}${SNAP_SEP}#{pane_title}"
+
+# The tmux server's pid, which is half of the key the exporters file their state
+# under. Pane numbering restarts with a new server, so without it a leftover file
+# could be read as some unrelated pane's state.
+SERVER_PID=0
+
+P_PANE=()   # per session, same order as SESSIONS: the pane we report on
+P_CMD=()
+P_CX=()
+P_CY=()
+P_TITLE=()
+P_RANK=()   # how we found it; see the scores below
+
+# Fills SESSIONS and the P_* arrays from one list-panes.
+monitor_snapshot() {
+  local line spid sess wact pid pact cx cy cmd wname title i n rank
+  local raw=()
+  SESSIONS=(); P_PANE=(); P_CMD=(); P_CX=(); P_CY=(); P_TITLE=(); P_RANK=()
+
+  while IFS= read -r line; do raw+=("$line"); done \
+    < <(tmux list-panes -a -F "$SNAP_FMT" 2>/dev/null)
+  [ ${#raw[@]} -gt 0 ] || return 0
+
+  # Session list first, alphabetical and filtered, so rows keep a stable order
+  # and the jump keys stay put between ticks.
+  while IFS= read -r sess; do
+    [ -n "$sess" ] || continue
+    SESSIONS+=("$sess"); P_PANE+=(""); P_CMD+=(""); P_CX+=(0); P_CY+=(0)
+    P_TITLE+=(""); P_RANK+=(-1)
+  done < <(printf '%s\n' "${raw[@]}" |
+             cut -d"$SNAP_SEP" -f2 |
+             sort -u |
+             grep -vx "$MON" |
+             { if [ -n "$MONITOR_FILTER" ]; then grep -E "$MONITOR_FILTER"; else cat; fi })
+
+  n=${#SESSIONS[@]}
+  [ "$n" -gt 0 ] || return 0
+
+  # Then the best pane for each. The running process is the truth -- automatic
+  # rename means the window is often not called "claude" at all -- so a pane
+  # running Claude outranks a pane merely sitting in a window named for it, and
+  # among equals the active one wins.
+  for line in "${raw[@]}"; do
+    IFS="$SNAP_SEP" read -r spid sess wact pid pact cx cy cmd wname title <<<"$line"
+    [ -n "$spid" ] && SERVER_PID=$spid
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      [ "${SESSIONS[$i]}" = "$sess" ] && break
+      i=$((i + 1))
+    done
+    [ "$i" -lt "$n" ] || continue
+
+    rank=0
+    if is_claude_cmd "$cmd"; then rank=400
+    elif is_claude_host "$cmd" && title_is_claude "$title"; then rank=300
+    elif [ "$wname" = "$MONITOR_WINDOW" ]; then rank=200
+    fi
+    [ "$wact" = 1 ] && rank=$((rank + 20))
+    [ "$pact" = 1 ] && rank=$((rank + 2))
+
+    if [ "$rank" -gt "${P_RANK[$i]}" ]; then
+      P_RANK[$i]=$rank; P_PANE[$i]=$pid; P_CMD[$i]=$cmd
+      P_CX[$i]=$cx; P_CY[$i]=$cy; P_TITLE[$i]=$title
+    fi
+  done
+}
+
+P_BUSY=()   # per session: 1 when the title says Claude is mid-turn
+
+# Decides, for every session at once, whether its title says Claude is working.
+# Claude sets the title to "<braille frame> <task summary>" for the whole turn
+# and swaps the frame for "✳" the moment it stops, so the leading glyph is the
+# signal -- and the test is the whole braille block rather than a list of frames,
+# so it survives Claude picking one we have not seen.
+#
+# One perl for all sessions, not one each: at twenty sessions that was twenty
+# forks a tick, some 5ms apiece, to inspect one character.
+monitor_busy_titles() {
+  local i n=${#SESSIONS[@]} feed=""
+  P_BUSY=()
+  i=0
+  while [ "$i" -lt "$n" ]; do P_BUSY+=(0); i=$((i + 1)); done
+  [ "$n" -gt 0 ] || return 0
+
+  if command -v perl >/dev/null 2>&1; then
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      feed+="$i	${P_TITLE[$i]}"$'\n'
+      i=$((i + 1))
+    done
+    while IFS= read -r i; do
+      [ -n "$i" ] && P_BUSY[$i]=1
+    done < <(printf '%s' "$feed" | perl -CSD -ne '
+               chomp;
+               my ($i, $t) = split(/\t/, $_, 2);
+               next unless defined $t && length $t;
+               my $c = ord(substr($t, 0, 1));
+               print "$i\n" if $c >= 0x2800 && $c <= 0x28FF;')
+    return 0
+  fi
+
+  # No perl: the frames we know about, matched on the first character. bash
+  # counts characters here only in a UTF-8 locale; elsewhere this degrades to
+  # matching any Claude glyph, which reads a settled session as working.
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    case $BRAILLE_FRAMES in *"${P_TITLE[$i]:0:1}"*) P_BUSY[$i]=1 ;; esac
+    i=$((i + 1))
+  done
+}
 
 # There used to be an age column here, seconds since #{window_activity} formatted
 # as 12d3h. It was dropped: a working session streams output constantly, so its
 # activity timestamp keeps bumping and the column read 0s however long the turn
 # had run -- the one number you actually want it to show.
 
+# --- exported state ----------------------------------------------------------
+#
+# What claude/monitor-hook.sh and claude/statusline.sh leave behind, one pair of
+# files per pane. Reading them costs no forks at all -- they are a handful of
+# key=value lines each and bash reads them itself -- so this is nearly free next
+# to the capture-pane the screen needs anyway.
+#
+# Everything here is advisory. A session on another machine, one started before
+# the hooks were installed, or one whose Claude was killed before SessionEnd will
+# have no file or a stale one, and the monitor falls back to what it can see.
+
+X_STATE=()    # per session, same order as SESSIONS: state from Claude's events
+X_DETAIL=()
+X_CTX=()      # and the numbers the screen does not carry
+X_COST=()
+X_COSTF=()    # the same cost, rounded for the column, so the draw does no work
+X_COST_ALL="" # every session's cost added up, for the line under the rows
+X_LIM5=""     # account-wide, so they belong in the header rather than a row
+X_LIM7=""
+X_RST5=""     # already formatted for the header; see monitor_fmt_reset
+X_RST7=""
+# Spend is split by how the session is paying, because on a subscription the two
+# mean completely different things. A subscription session's cost is notional --
+# what those tokens would have cost at API rates -- and nothing is billed for it;
+# the limits are the real constraint. An API-billed session's cost is money. A
+# personal subscription never silently crosses over: hitting the limit stops the
+# session and tells you to run /login for an API-billed account, so anything in
+# the API column got there because someone chose it.
+X_COST_SUB=""
+X_COST_API=""
+X_COST_OVER=""   # spend the exporter attributed to an exhausted window
+X_NOTICE=""      # a limit notice read off some session's screen
+
+# The notices Claude Code puts up about limits and extra usage. These are matched
+# rather than any field, because the field does not exist anywhere reachable:
+# isUsingOverage lives only inside the process, and its own renderer returns
+# nothing at all for the ordinary in-overage case -- a message appears only near
+# the overage cap or once something has been refused. So this catches the loud
+# half, and the exporter's arithmetic covers the quiet half.
+#
+# Matched as whole phrases, since the bottom of the screen also holds Claude's
+# own prose and "you've reached your" is a sentence anyone might write.
+LIMIT_NOTICES='close to your usage limit|close to your usage credit limit|out of extra usage|out of usage credits|hit your monthly spend limit|hit your usage limit|monthly spend limit|now using extra usage'
+
+# Epoch -> local clock, remembered so this costs a fork only when the window
+# actually rolls over. The header is rebuilt on every keystroke and must not
+# fork; these are computed on the refresh tick instead.
+FMT_OUT=""
+R5_EPOCH=""; R5_TEXT=""
+R7_EPOCH=""; R7_TEXT=""
+
+# Whether a window's reset is still ahead of us, i.e. the reading that came with
+# it describes the window we are in. An unreadable or absent epoch counts as
+# pending: an old Claude that never sent one should not have all its numbers
+# thrown away.
+monitor_reset_pending() {
+  case ${1:-} in
+    ''|0|*[!0-9]*) return 0 ;;
+    *) [ "$1" -ge "${2:-0}" ] ;;
+  esac
+}
+monitor_fmt_reset() {
+  # date -r takes an epoch on BSD and a filename on GNU, so the GNU spelling is
+  # the fallback rather than the other way round.
+  FMT_OUT=$(date -r "$1" "+$2" 2>/dev/null) ||
+    FMT_OUT=$(date -d "@$1" "+$2" 2>/dev/null) ||
+    FMT_OUT=""
+}
+
+# Reads one key=value file into KV_*. Values may contain "=" -- read gives the
+# last variable the unsplit remainder -- but not newlines; the hook flattens
+# those before writing for exactly this reason.
+KV_STATE=""; KV_DETAIL=""; KV_TS=0
+KV_CTX=""; KV_COST=""; KV_LIM5=""; KV_LIM7=""
+KV_RST5=""; KV_RST7=""; KV_SUB=""
+monitor_read_kv() {
+  local f=$1 k v
+  [ -r "$f" ] || return 1
+  while IFS='=' read -r k v; do
+    case $k in
+      state)  KV_STATE=$v ;;
+      detail) KV_DETAIL=$v ;;
+      ctx)    KV_CTX=$v ;;
+      cost)   KV_COST=$v ;;
+      over)   KV_OVER=$v ;;
+      lim5)   KV_LIM5=$v ;;
+      lim7)   KV_LIM7=$v ;;
+      rst5)   KV_RST5=$v ;;
+      rst7)   KV_RST7=$v ;;
+      sub)    KV_SUB=$v ;;
+      ts)     KV_TS=$v ;;
+    esac
+  done < "$f"
+  return 0
+}
+
+# Fills the X_* arrays for every session. One `date` for the whole tick: bash 3.2
+# has no $EPOCHSECONDS, and a fork per session to age a file would cost more than
+# reading them all.
+monitor_read_exports() {
+  local i n=${#SESSIONS[@]} now base limts=0 subc=0 apic=0 overc=0 allc=0
+  local seen_sub="" seen_api="" seen_any=""
+  X_STATE=(); X_DETAIL=(); X_CTX=(); X_COST=(); X_COSTF=()
+  X_LIM5=""; X_LIM7=""; X_RST5=""; X_RST7=""
+  X_COST_SUB=""; X_COST_API=""; X_COST_OVER=""; X_COST_ALL=""; X_NOTICE=""
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    X_STATE+=(""); X_DETAIL+=(""); X_CTX+=(""); X_COST+=(""); X_COSTF+=("")
+    i=$((i + 1))
+  done
+  [ "$n" -gt 0 ] && [ -d "$MONITOR_DIR" ] || return 0
+
+  now=$(date +%s 2>/dev/null) || return 0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    base="$MONITOR_DIR/${SERVER_PID}-${P_PANE[$i]#%}"
+
+    KV_STATE=""; KV_DETAIL=""; KV_TS=0
+    if monitor_read_kv "$base.state" &&
+       [ $((now - KV_TS)) -lt "$MONITOR_STALE" ] 2>/dev/null; then
+      X_STATE[$i]=$KV_STATE
+      X_DETAIL[$i]=$KV_DETAIL
+    fi
+
+    # The metadata half is not aged the same way. Its numbers only move when
+    # Claude answers, so a quiet session's context and cost stay true for as long
+    # as it stays quiet -- expiring them would blank the column on exactly the
+    # sessions that have been sitting there longest.
+    KV_CTX=""; KV_COST=""; KV_LIM5=""; KV_LIM7=""; KV_TS=0
+    KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_OVER=""
+    if monitor_read_kv "$base.meta"; then
+      X_CTX[$i]=$KV_CTX
+      X_COST[$i]=$KV_COST
+      # The limits are account-wide, so every session reports the same pair --
+      # but each only rewrites its file when its own status line runs, so the
+      # files disagree by however long ago that was. Take them from the newest
+      # file rather than from whichever session happens to be read last, which
+      # is alphabetical order and could be minutes out of date.
+      #
+      # A fresh write timestamp is not enough to trust them, though. These
+      # numbers come from the last API response that session received, so a
+      # session sitting idle across a window rollover keeps re-exporting the old
+      # window's usage with a new timestamp on it -- most of the fleet reads that
+      # way most of the time. The reset epoch is what gives it away: once it is
+      # in the past the reading has been superseded, whatever its timestamp says.
+      # Better no number than last window's, so a superseded one is skipped
+      # rather than aged into second place.
+      case $KV_TS in
+        ''|*[!0-9]*) ;;
+        *)
+          if [ "$KV_TS" -gt "$limts" ] &&
+             [ -n "$KV_LIM5$KV_LIM7" ] && [ "$KV_LIM5" != -1 ] &&
+             monitor_reset_pending "$KV_RST5" "$now"; then
+            limts=$KV_TS
+            X_LIM5=$KV_LIM5
+            X_LIM7=$KV_LIM7
+            monitor_reset_texts "$KV_RST5" "$KV_RST7"
+          fi
+          ;;
+      esac
+      # Into whichever column this session is paying from. A session that has not
+      # answered yet reports neither, and is left out rather than guessed at.
+      case $KV_COST in
+        ''|*[!0-9.]*) ;;
+        *)
+          monitor_cents "$KV_COST"
+          # Rounded here rather than in the draw: the draw reruns on every
+          # keystroke and the arithmetic would be repeated for nothing.
+          printf -v X_COSTF[$i] '$%d.%02d' $((CENTS / 100)) $((CENTS % 100))
+          allc=$((allc + CENTS)); seen_any=1
+          case $KV_SUB in
+            1) subc=$((subc + CENTS)); seen_sub=1 ;;
+            0) apic=$((apic + CENTS)); seen_api=1 ;;
+          esac
+          ;;
+      esac
+      case $KV_OVER in
+        ''|*[!0-9.]*) ;;
+        *) monitor_cents "$KV_OVER"; overc=$((overc + CENTS)) ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [ "$overc" -gt 0 ] && printf -v X_COST_OVER '%d.%02d' $((overc / 100)) $((overc % 100))
+  # Formatted only if something landed there, so an absent column stays absent
+  # rather than reading $0.00 -- which would look like a measurement.
+  [ -n "$seen_sub" ] && printf -v X_COST_SUB '%d.%02d' $((subc / 100)) $((subc % 100))
+  [ -n "$seen_api" ] && printf -v X_COST_API '%d.%02d' $((apic / 100)) $((apic % 100))
+  [ -n "$seen_any" ] && printf -v X_COST_ALL '%d.%02d' $((allc / 100)) $((allc % 100))
+  return 0
+}
+
+# Sets X_RST5 and X_RST7 from a pair of epochs, reusing the last answer for as
+# long as each epoch holds -- so this forks only when a window actually rolls
+# over, not once per session per tick. The 5-hour window is shown as a clock time
+# and the weekly one as a day, since one is always today and the other rarely is.
+monitor_reset_texts() {
+  local e5=$1 e7=$2
+  case $e5 in
+    ''|0|*[!0-9]*) X_RST5="" ;;
+    *)
+      if [ "$e5" != "$R5_EPOCH" ]; then
+        monitor_fmt_reset "$e5" '%-l:%M%p'; R5_EPOCH=$e5; R5_TEXT=$FMT_OUT
+      fi
+      X_RST5=$R5_TEXT
+      ;;
+  esac
+  case $e7 in
+    ''|0|*[!0-9]*) X_RST7="" ;;
+    *)
+      if [ "$e7" != "$R7_EPOCH" ]; then
+        monitor_fmt_reset "$e7" '%a %-l%p'; R7_EPOCH=$e7; R7_TEXT=$FMT_OUT
+      fi
+      X_RST7=$R7_TEXT
+      ;;
+  esac
+}
+
+# "1.234" -> CENTS=123. Assigns rather than prints: a $(...) per session to add up
+# a column of numbers is a fork per session, which cost more than reading all the
+# files put together. Truncates rather than rounds -- this is a running total for
+# a header, not an invoice.
+CENTS=0
+monitor_cents() {
+  local v=$1 whole frac
+  case $v in
+    *.*) whole=${v%%.*}; frac=${v#*.} ;;
+    *)   whole=$v; frac=0 ;;
+  esac
+  frac=${frac}00
+  frac=${frac:0:2}
+  case $whole in ''|*[!0-9]*) whole=0 ;; esac
+  case $frac in ''|*[!0-9]*) frac=0 ;; esac
+  CENTS=$((10#$whole * 100 + 10#$frac))
+}
+
+# Reconciles what the screen says with what Claude's own events say.
+#
+# Neither source wins outright, because each is blind where the other is not:
+#
+#   ask    whichever sees it first. The screen usually does -- Notification lags
+#          the prompt by about six seconds, a refresh tick is two -- but the hook
+#          catches prompts in a pane the classifier cannot read.
+#   draft  screen only. No event fires for typing, and nothing in the payload
+#          describes the input box.
+#   shell  screen only, and final: no Claude, so an old file is just a leftover
+#   other  from a session that has since exited.
+#   gone
+#   busy   the events, when fresh. They know a turn has started before any of it
+#   idle   reaches the screen, and they are right about a pane whose title the
+#          terminal never set.
+monitor_merge() {
+  local i=$1 xs=${X_STATE[$i]} xd=${X_DETAIL[$i]}
+
+  [ -n "$xs" ] || return 0
+  case $CLS_STATE in
+    shell|other|gone) return 0 ;;
+  esac
+
+  if [ "$xs" = ask ] && [ "$CLS_STATE" != ask ]; then
+    CLS_STATE=ask
+    [ -n "$xd" ] && CLS_DETAIL=$xd
+    return 0
+  fi
+  case $CLS_STATE in
+    ask|draft) return 0 ;;
+  esac
+  case $xs in
+    busy|idle)
+      CLS_STATE=$xs
+      # The screen names a turn better than a tool name does -- "Fixing the
+      # surface findings…" against "Bash" -- so the event's detail only fills a
+      # gap it left.
+      if [ -z "$CLS_DETAIL" ] && [ -n "$xd" ]; then CLS_DETAIL=$xd; fi
+      ;;
+  esac
+  # Explicit, because every branch above ends in a test whose result would
+  # otherwise become this function's status and read as failure to a caller.
+  return 0
+}
+
+# Looks for a limit or extra-usage notice at the bottom of the pane just read,
+# and keeps the first one found across the fleet for the header. Only the bottom
+# few rows, where Claude puts its notices -- the transcript above them is full of
+# sentences that would match.
+monitor_scan_notice() {
+  local j stop
+  [ -z "$X_NOTICE" ] || return 0
+  stop=$((L_N - 6)); [ "$stop" -lt 0 ] && stop=0
+  j=$((L_N - 1))
+  while [ "$j" -ge "$stop" ]; do
+    if [[ ${LINES[$j]} =~ $LIMIT_NOTICES ]]; then
+      monitor_strip "${LINES[$j]}"
+      X_NOTICE=$STRIPPED
+      return 0
+    fi
+    j=$((j - 1))
+  done
+  return 0
+}
+
 # --- state ------------------------------------------------------------------
 
-# Braille frames Claude spins in the pane title while it works. Only used when
-# perl is missing: the perl check below covers the whole braille block, so it
-# survives Claude picking frames that are not in this list.
-BRAILLE_FRAMES='⠁⠂⠄⠈⠐⠠⡀⢀⠃⠆⠇⠋⠏⠙⠘⠸⠴⠦⠧⠹⠼⣀⣤⣶⣿'
+LINES=()   # the visible rows of the pane being classified
+L_N=0
 
-monitor_title() { tmux display-message -p -t "$1" '#{pane_title}' 2>/dev/null; }
+# Claude separates the input box's prompt glyph from what you type with a
+# non-breaking space, where a dialog's option rows use a plain one. It looks like
+# a space on screen and is not one to the shell, so every place that steps over
+# the glyph has to strip both -- getting this wrong left a stray byte on the front
+# of the draft text and, worse, stopped the dim test below from ever finding the
+# escape sequence it looks for.
+NBSP=$'\302\240'
 
-# True when a window's title says Claude is working. Claude sets the title to
-# "<braille frame> <task summary>" for the whole turn and swaps the frame for
-# "✳" the moment it stops, so the leading glyph is the signal. Anything else --
-# "✳ Claude Code", a bare hostname, an empty title -- is not working.
-monitor_title_busy() {
-  local t
+# Reads a pane's visible text into LINES, one row per element, no escape
+# sequences. Indexing matters: capture-pane emits every row from the top of the
+# screen, blanks included, so LINES[cursor_y] is the row the cursor is on.
+monitor_read_pane() {
+  local line
+  LINES=(); L_N=0
   [ -n "${1:-}" ] || return 1
-  t=$(monitor_title "$1") || return 1
-  [ -n "$t" ] || return 1
-  if command -v perl >/dev/null 2>&1; then
-    printf '%s' "$t" |
-      perl -CS -ne 'exit(ord(substr($_, 0, 1)) >= 0x2800 &&
-                         ord(substr($_, 0, 1)) <= 0x28FF ? 0 : 1)'
-    return
-  fi
-  case $BRAILLE_FRAMES in *"$(printf '%s' "$t" | head -c 3)"*) return 0 ;; esac
+  while IFS= read -r line; do LINES+=("$line"); done \
+    < <(tmux capture-pane -p -t "$1" 2>/dev/null)
+  L_N=${#LINES[@]}
+  [ "$L_N" -gt 0 ]
+}
+
+# Trims a row for display: leading whitespace and glyphs off, trailing space off.
+STRIPPED=""
+monitor_strip() {
+  local s=$1
+  while [ -n "$s" ]; do
+    case ${s:0:1} in [[:alnum:]]) break ;; *) s=${s:1} ;; esac
+  done
+  while [ -n "$s" ]; do
+    case ${s: -1} in [[:space:]]) s=${s%?} ;; *) break ;; esac
+  done
+  STRIPPED=$s
+}
+
+# What a live dialog is asking, read upwards from the row the cursor sits on.
+# Taken from the screen rather than from a list of known wordings so that a
+# prompt this script has never heard of still says something useful.
+ASK_DETAIL=""
+monitor_ask_detail() {
+  local row=$1 i stop line tail fallback="" loose=""
+  ASK_DETAIL=""
+  stop=$((row - 14)); [ "$stop" -lt 0 ] && stop=0
+  i=$((row - 1))
+  while [ "$i" -ge "$stop" ]; do
+    monitor_strip "${LINES[$i]}"
+    line=$STRIPPED
+    if [ -n "$line" ]; then
+      case $line in
+        *'?')                                 # "Do you want to create foo.txt?"
+          # Claude's own questions arrive at the end of a wrapped paragraph, so
+          # the line holding the "?" usually starts mid-sentence. Keep the last
+          # sentence of it: the column is narrow and the question is the point.
+          tail=${line##*'. '}
+          case $tail in *'?') line=$tail ;; esac
+          ASK_DETAIL=$line
+          return 0
+          ;;
+        *'?'*) [ -n "$loose" ] || loose=$line ;;
+      esac
+      [ -n "$fallback" ] || fallback=$line    # else the dialog's own title
+    fi
+    i=$((i - 1))
+  done
+  ASK_DETAIL=${loose:-$fallback}
+}
+
+# Claude's status line, if it is on screen: "✢ Musing… (7s · ↓ 481 tokens)".
+# It only shows before the reply starts streaming, so its absence means nothing.
+#
+# Read from the bottom up and only near the bottom, where the status line lives,
+# and only where an ellipsis runs into the timer -- "Cooking… (13s · ". Scanning
+# the whole screen for "(<digits>s · " matched transcript text instead: a session
+# whose reply happened to quote a regex reported its own detail as
+# "SURFACE|AMBIGUOUS|UNSUPPORTED|KEY)|question\(s\) sat". The same match decides
+# busy, so the wrong line could also have invented a turn that was not running.
+STATUS_DETAIL=""
+monitor_status_detail() {
+  local i stop line
+  STATUS_DETAIL=""
+  stop=$((L_N - 20)); [ "$stop" -lt 0 ] && stop=0
+  i=$((L_N - 1))
+  while [ "$i" -ge "$stop" ]; do
+    line=${LINES[$i]}
+    # Column 0 or it is not the status line. A tool still running prints the same
+    # shape -- a command truncated to an ellipsis, then "(39s · 2 lines)" -- but
+    # indented under its ⏺ row, and picking that up named the turn after whatever
+    # grep it happened to be running.
+    case $line in
+      ''|[[:space:]]*) i=$((i - 1)); continue ;;
+    esac
+    if [[ $line == *'(esc to interrupt'* ]]; then   # pre-2.1 versions
+      monitor_strip "${line%%'(esc to interrupt'*}"
+      STATUS_DETAIL=$STRIPPED
+      return 0
+    fi
+    # The timer is "(7s · " on a short turn and "(1h 49m 2s · " on a long one, so
+    # the whole clock is matched loosely rather than as seconds alone -- which is
+    # why a turn running over an hour used to lose its name off this line.
+    if [[ $line =~ (.*…)\ \([0-9hms\ ]+·\  ]]; then
+      monitor_strip "${BASH_REMATCH[1]}"
+      STATUS_DETAIL=$STRIPPED
+      return 0
+    fi
+    i=$((i - 1))
+  done
   return 1
 }
 
-# monitor_classify <pane_current_command> <pane text> [window id] -> "state|detail"
+# The task summary out of a title, "⠂ Fix the parser" -> "Fix the parser".
+# "Claude Code" is the placeholder title of a turn too young to have a summary
+# yet, so it says nothing worth a column.
+TITLE_DETAIL=""
+monitor_title_detail() {
+  local t=${1:-}
+  TITLE_DETAIL=""
+  title_is_claude "$t" || return 1
+  t=${t#* }
+  [ "$t" = 'Claude Code' ] && return 1
+  monitor_strip "$t"
+  TITLE_DETAIL=$STRIPPED
+  [ -n "$TITLE_DETAIL" ]
+}
+
+# True when the text on a row is Claude's dim suggestion of what to type next
+# rather than something a human typed. One capture of that single row is enough:
+# the suggestion is rendered dim, typed text is not.
+monitor_row_is_dim() {
+  local raw after seq
+  raw=$(tmux capture-pane -pe -t "$1" -S "$2" -E "$2" 2>/dev/null) || return 1
+  case $raw in *'❯'*) after=${raw#*❯} ;; *) return 1 ;; esac
+  after=${after#"$NBSP"}
+  after=${after# }
+  while [ "${after:0:2}" = "${ESC}[" ]; do
+    seq=${after:2}
+    case $seq in *m*) seq=${seq%%m*} ;; *) return 1 ;; esac
+    case ";$seq;" in *';2;'*) return 0 ;; esac
+    after=${after#*m}
+  done
+  return 1
+}
+
+# Footers a blocking dialog keeps on screen. Only consulted when the cursor is
+# somewhere unrecognised, as a way of noticing a prompt that does not park it.
+DIALOG_FOOTERS='[Ee]sc to (cancel|go back|close)|[Ee]nter to (confirm|approve|select|retry)'
+# Wordings Claude asks with. A weak signal by itself -- it writes sentences like
+# these in its replies too -- so it only counts alongside a dialog footer.
+ASK_WORDS='Do you want|Would you like|Ready to code\?|Is this a project you created'
+
+# monitor_classify <index> -> sets CLS_STATE and CLS_DETAIL from LINES and the
+# snapshot. Assigns rather than prints "state|detail": the old packed form had to
+# keep the free text last so a draft containing "|" could not shift the fields.
 #
-#   ask     Claude is waiting on a permission / plan prompt  (actionable)
+#   ask     Claude is waiting on a permission / plan / select prompt (actionable)
 #   busy    Claude is generating
 #   draft   text sitting in the prompt, unsent  (also actionable)
 #   idle    Claude is up with an empty prompt
 #   shell   just a shell
 #   other   something else running (detail says what)
-#   gone    session or window disappeared
-#
-# The patterns below are Claude Code UI strings, kept here (and in
-# monitor_title_busy) on purpose: if a future version reworks its footer or its
-# title, those two are the only places to fix.
+#   gone    session or pane disappeared
+CLS_STATE=""
+CLS_DETAIL=""
 monitor_classify() {
-  local cmd=$1 text=$2 wid=${3:-} detail
+  local i=$1 cmd=${P_CMD[$i]} cx=${P_CX[$i]} cy=${P_CY[$i]} title=${P_TITLE[$i]}
+  local crow lead focus content bottom j stop grow row
 
-  [ -n "$cmd" ] || { printf 'gone|'; return; }
-  case $cmd in
-    zsh|-zsh|bash|-bash|sh|fish|login) printf 'shell|'; return ;;
-  esac
-  is_claude_cmd "$cmd" || { printf 'other|%s' "$cmd"; return; }
+  CLS_STATE=gone; CLS_DETAIL=""
+  [ -n "${P_PANE[$i]}" ] || return 0
+  [ -n "$cmd" ] || return 0
 
-  # Actionable prompts win: a pending question matters more than the spinner.
-  # The last pattern is the first-run folder-trust prompt, which asks with none
-  # of the usual wording.
-  local asks='Do you want|Would you like|Ready to code\?|Is this a project you created'
-  if printf '%s\n' "$text" | grep -qE "$asks"; then
-    detail=$(printf '%s\n' "$text" |
-      grep -E "$asks" |
-      tail -1 |
-      sed -e 's/^[^[:alnum:]]*//' -e 's/[[:space:]]*$//')
-    printf 'ask|%s' "$detail"
-    return
+  # Not Claude: rank 300 and up is what the snapshot gives a pane it recognised
+  # as Claude, so anything below that is whatever else happens to be running.
+  if [ "${P_RANK[$i]}" -lt 300 ]; then
+    case $cmd in
+      zsh|-zsh|bash|-bash|sh|fish|login) CLS_STATE=shell ;;
+      *) CLS_STATE=other; CLS_DETAIL=$cmd ;;
+    esac
+    return 0
   fi
 
-  # Working. Claude's own footer hint ("esc to interrupt") is gone as of 2.1.x,
-  # and the status line ("✢ Musing… (7s · thinking)") only shows before the
-  # reply starts streaming -- so the title is what actually spans the turn.
-  # Both text forms are still checked: they cost one grep and cover versions
-  # that do not set a title.
-  if monitor_title_busy "$wid" ||
-     printf '%s\n' "$text" | grep -qE 'esc to interrupt|\([0-9]+s · '; then
-    # "✻ Cooking… (esc to interrupt · ctrl+t to hide todos)" -> "Cooking…"
-    # "✢ Musing… (7s · ↓ 481 tokens · thinking)"            -> "Musing…"
-    detail=$(printf '%s\n' "$text" |
-      grep -E 'esc to interrupt|\([0-9]+s · ' |
-      tail -1 |
-      sed -e 's/(esc to interrupt.*//' -e 's/([0-9]*s · .*//' \
-          -e 's/^[^[:alnum:]]*//' -e 's/[[:space:]]*$//')
-    # No status line on screen: fall back to the title's task summary. "Claude
-    # Code" is the placeholder title of a turn too young to have a summary yet,
-    # so it says nothing worth a column.
-    if [ -z "$detail" ] && [ -n "$wid" ]; then
-      detail=$(monitor_title "$wid" | sed -e 's/^[^ ]* //' -e 's/[[:space:]]*$//')
-      [ "$detail" = 'Claude Code' ] && detail=
+  # Which widget has the keyboard, straight from where Claude parked the cursor.
+  # This is the whole trick. Claude keeps the cursor in the input box at column
+  # 0 when it is yours to type in, and moves it onto the selected row of a dialog
+  # -- indented, inside the box -- when it is waiting on an answer. So focus, not
+  # wording, decides whether a session is blocked.
+  #
+  # The wording could not: "Do you want ..." also appears in Claude's own replies
+  # and in the transcript of prompts already answered, and the old test grepped
+  # the whole screen for it *before* checking the spinner. A session that was
+  # working, or one whose last reply merely ended in a question, showed up as the
+  # loudest row on the monitor.
+  # The row the keyboard belongs to is the cursor's own when it carries a prompt
+  # glyph, and otherwise the nearest one above it: a draft long enough to wrap
+  # leaves the cursor on a continuation row (which read as an empty prompt, so a
+  # long draft showed up as idle), and a dialog that opens a text field leaves it
+  # below the option it belongs to.
+  crow=""; lead=""; focus=other; grow=-1
+  j=$cy
+  [ "$j" -ge "$L_N" ] && j=$((L_N - 1))
+  stop=$((j - 12)); [ "$stop" -lt 0 ] && stop=0
+  while [ "$j" -ge "$stop" ]; do
+    row=${LINES[$j]}
+    row=${row#"${row%%[! ]*}"}
+    case $row in '❯'*|'>'*) crow=$row; grow=$j; break ;; esac
+    j=$((j - 1))
+  done
+
+  if [ -n "$crow" ]; then
+    lead=${crow#'❯'}; lead=${lead#'>'}
+    # Which of the two that glyph belongs to. The separator is the giveaway: the
+    # input box puts a non-breaking space after it, every dialog a plain one.
+    # Column position cannot decide it -- a permission prompt indents its rows but
+    # the dialog the AskUserQuestion tool puts up does not, so its selected row
+    # sits at column 0 looking exactly like an input box, which is how a session
+    # sitting on a question came to read as a draft of "1. Yes".
+    #
+    # Two weaker signals stand behind the separator so that losing it does not
+    # turn every settled session into a NEEDS YOU: option rows are numbered, and
+    # a dialog keeps the cursor on the glyph while the input box keeps it after
+    # the separator.
+    case $lead in
+      "$NBSP"*) focus=input ;;
+      ' '[0-9]*.*) focus=dialog ;;
+      *) if [ "$grow" = "$cy" ] && [ "$cx" -le 1 ]; then focus=dialog; else focus=input; fi ;;
+    esac
+  fi
+
+  # A dialog beats everything else: a pending question matters more than the
+  # spinner, and one can be up mid-turn.
+  if [ "$focus" = dialog ]; then
+    monitor_ask_detail "$grow"
+    CLS_STATE=ask; CLS_DETAIL=$ASK_DETAIL
+    return 0
+  fi
+
+  # Cursor somewhere we do not recognise -- a full-screen view, or a dialog that
+  # leaves the cursor alone. Read the bottom of the screen, which is where a live
+  # prompt keeps its footer, and never the whole of it.
+  if [ "$focus" = other ]; then
+    bottom=""
+    j=$((L_N - 8)); [ "$j" -lt 0 ] && j=0
+    while [ "$j" -lt "$L_N" ]; do
+      bottom+="${LINES[$j]}"$'\n'
+      j=$((j + 1))
+    done
+    # A footer is enough on its own; the wording only counts next to an option
+    # row, since Claude writes sentences like these in its replies as well.
+    if [[ $bottom =~ $DIALOG_FOOTERS ]] ||
+       { [[ $bottom =~ $ASK_WORDS ]] && [[ $bottom =~ ❯[[:space:]]*[0-9]+\. ]]; }; then
+      monitor_ask_detail "$L_N"
+      CLS_STATE=ask; CLS_DETAIL=$ASK_DETAIL
+      return 0
     fi
-    printf 'busy|%s' "$detail"
-    return
   fi
 
-  # Nothing running. The last prompt line tells us whether something is typed
-  # but unsent -- worth surfacing, since that one is waiting on a keystroke.
-  # (Earlier lines starting with the prompt glyph are scrollback, so take the
-  # last one: the input box is always at the bottom.)
-  local prompt agents
-  prompt=$(printf '%s\n' "$text" | grep '^❯' | tail -1 | sed -e 's/^❯[[:space:]]*//' -e 's/[[:space:]]*$//')
-  if [ -n "$prompt" ]; then
-    printf 'draft|%s' "$prompt"
-    return
+  # Working. The title is what actually spans the turn: Claude's own footer hint
+  # ("esc to interrupt") is gone as of 2.1.x, and the status line only shows
+  # before the reply starts streaming. The status line is still read, because it
+  # names the turn better than the title's summary does.
+  if monitor_status_detail; then
+    CLS_STATE=busy; CLS_DETAIL=$STATUS_DETAIL
+    return 0
+  fi
+  if [ "${P_BUSY[$i]}" = 1 ]; then
+    CLS_STATE=busy
+    monitor_title_detail "$title" && CLS_DETAIL=$TITLE_DETAIL
+    return 0
   fi
 
-  # The "N agents" footer counter stays on screen while Claude sits idle, so it
-  # is a detail, not a state: background agents may still be running.
-  agents=$(printf '%s\n' "$text" | grep -oE '[0-9]+ agents?' | tail -1)
-  printf 'idle|%s' "$agents"
-}
+  # Idle, unless something is typed and unsent -- that one is waiting on a
+  # keystroke, so it is worth surfacing.
+  content=""
+  if [ "$focus" = input ]; then
+    # $lead is the row past the glyph, which the focus test above already took
+    # off by pattern -- ${crow:1} would have counted characters, and that only
+    # works out to one glyph in a UTF-8 locale.
+    content=${lead#"$NBSP"}
+    content=${content# }
+    while [ -n "$content" ]; do
+      case ${content: -1} in [[:space:]]) content=${content%?} ;; *) break ;; esac
+    done
+  fi
 
-# State of a session -> "state|detail". The free-text detail goes last so that a
-# prompt containing "|" cannot shift the other fields when read splits on it (the
-# final variable of a `read` gets the unsplit remainder).
-monitor_state() {
-  local sess=$1 pick id cmd
-  pick=$(monitor_pick_window "$sess")
-  if [ -z "$pick" ]; then printf 'gone|'; return; fi
-  id=${pick%%|*}
-  cmd=${pick#*|}
-  monitor_classify "$cmd" "$(monitor_capture "$id")" "$id"
+  if [ -n "$content" ]; then
+    # Text on the prompt row is not proof anyone typed it. Claude fills the empty
+    # box with a dim suggestion of what to ask next, which used to read as a
+    # draft and made settled sessions look like they were waiting on a keystroke.
+    #
+    # The cursor settles it for free: typing moves it past the glyph, or off the
+    # glyph's row entirely once the text wraps, while a suggestion leaves it
+    # sitting at column 2. Only in that last case -- a suggestion, or a draft
+    # whose cursor was moved home -- is a second capture worth it, to see whether
+    # the text on that row is dim.
+    if [ "$grow" != "$cy" ] || [ "$cx" -gt 2 ] ||
+       ! monitor_row_is_dim "${P_PANE[$i]}" "$grow"; then
+      CLS_STATE=draft; CLS_DETAIL=$content
+      return 0
+    fi
+  fi
+
+  # Nothing pending. The title's summary says what this session was last doing,
+  # which beats what used to be here: the footer's "N agents" counter, which
+  # reads the same in a session that has never run one.
+  CLS_STATE=idle
+  monitor_title_detail "$title" && CLS_DETAIL=$TITLE_DETAIL
+  return 0
 }
 
 # Sets STATE_TEXT (fixed-width, ASCII on purpose: printf pads by bytes, so a
@@ -251,6 +880,12 @@ term_size() { # -> "rows cols"
   esac
 }
 
+# Width of every column before the detail, which the padding and the truncation
+# both have to agree on: 2 + key 1 + 2 + name 23 + 1 + state 9 + 1 + ctx 4 + 1 +
+# cost 8 + 2. Kept in one place because getting it wrong by one leaves the
+# highlight bar short of the right edge, which is invisible until you look for it.
+MON_PREFIX=54
+
 SESSIONS=()
 SEL=0          # cursor position in SESSIONS
 SEL_NAME=""    # and the session it is on, so it can follow that one as the list moves
@@ -280,28 +915,39 @@ N_CLAUDE=0
 N_WORK=0
 N_NEED=0
 
-# Polls every session and fills the row arrays. This is the expensive half -- a
-# list-windows, a capture-pane and a display-message per session, about 20ms each
-# -- so it runs on the refresh tick and not on every keystroke. Moving the cursor
-# cannot change any of it, and redrawing from what is already here is what keeps
-# j and k instant.
+# Polls every session and fills the row arrays. This is the expensive half -- one
+# list-panes for the lot, then a capture-pane each, about 20ms apiece -- so it
+# runs on the refresh tick and not on every keystroke. Moving the cursor cannot
+# change any of it, and redrawing from what is already here is what keeps j and k
+# instant.
 monitor_collect() {
-  local sess state detail
-  SESSIONS=()
-  while IFS= read -r sess; do SESSIONS+=("$sess"); done < <(monitor_sessions)
+  local i n
+  monitor_snapshot
   monitor_sel_sync
+  monitor_busy_titles
+  monitor_read_exports
 
   ROW_STATE=(); ROW_DETAIL=()
   N_CLAUDE=0; N_WORK=0; N_NEED=0
-  for sess in ${SESSIONS[@]+"${SESSIONS[@]}"}; do
-    IFS='|' read -r state detail <<<"$(monitor_state "$sess")"
-    ROW_STATE+=("$state")
-    ROW_DETAIL+=("$detail")
-    case $state in
+  n=${#SESSIONS[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if monitor_read_pane "${P_PANE[$i]}"; then
+      monitor_classify "$i"
+      monitor_merge "$i"
+      monitor_scan_notice
+    else
+      # The pane went away between the snapshot and the capture.
+      CLS_STATE=gone; CLS_DETAIL=""
+    fi
+    ROW_STATE+=("$CLS_STATE")
+    ROW_DETAIL+=("$CLS_DETAIL")
+    case $CLS_STATE in
       ask)   N_NEED=$((N_NEED + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       busy)  N_WORK=$((N_WORK + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       draft|idle) N_CLAUDE=$((N_CLAUDE + 1)) ;;
     esac
+    i=$((i + 1))
   done
 }
 
@@ -309,10 +955,13 @@ monitor_collect() {
 # row with printf -v, so a keystroke that only moves the cursor costs a redraw and
 # nothing else.
 monitor_draw() {
-  local h w i n state detail maxd pad row out="" hdr name
+  local h w i n state detail maxd pad row out="" hdr name ctx cost tot
   read -r h w <<<"$(term_size)"
 
-  maxd=$((w - 43))
+  # What every column before the detail takes: two spaces, the key, two spaces,
+  # the name at 23, a space, the state at 9, a space, the context at 4, a space,
+  # the cost at 8, and two more spaces.
+  maxd=$((w - MON_PREFIX))
   [ "$maxd" -lt 12 ] && maxd=12
 
   n=${#SESSIONS[@]}
@@ -323,26 +972,37 @@ monitor_draw() {
     state=${ROW_STATE[$i]}
     detail=${ROW_DETAIL[$i]}
     [ ${#detail} -gt "$maxd" ] && detail=${detail:0:maxd}
+    # Context used, from the status line export. Blank -- not "0%" -- for a
+    # session that has not answered yet or has no exporter installed, so an empty
+    # column reads as "unknown" rather than "plenty of room left".
+    ctx='    '
+    case ${X_CTX[$i]} in
+      ''|-1|*[!0-9]*) ;;
+      *) printf -v ctx '%3s%%' "${X_CTX[$i]}" ;;
+    esac
+    # Blank, again, rather than $0.00 for a session that has not reported --
+    # nothing spent and nothing known are different things.
+    printf -v cost '%8s' "${X_COSTF[$i]}"
     monitor_state_style "$state"
     if [ "$i" = "$SEL" ]; then
       # The cursor's row goes in reverse video, with no inner resets -- one would
       # end the highlight halfway across -- and padded out so the bar reaches the
       # right edge (tmux erases in the default attribute, so ESC[K cannot do that
-      # for us). The 40 is what the columns before the detail take: mark, key,
-      # name and state with their gaps. The mark is kept as well, so the cursor is
-      # still visible with colors off; it and the padding live outside every
-      # %-*s, so a multibyte glyph cannot skew them.
-      pad=$((w - 40 - ${#detail}))
+      # for us). The mark is kept as well, so the cursor is still visible with
+      # colors off; it and the padding live outside every %-*s, so a multibyte
+      # glyph cannot skew them.
+      pad=$((w - MON_PREFIX - ${#detail}))
       [ "$pad" -lt 0 ] && pad=0
-      printf -v row '%s▸ %s  %-23s %s  %s%*s%s' \
+      printf -v row '%s▸ %s  %-23s %s %s %s  %s%*s%s' \
         "$C_REV" "${KEYS:$i:1}" \
-        "$name" "$STATE_TEXT" \
+        "$name" "$STATE_TEXT" "$ctx" "$cost" \
         "$detail" "$pad" '' "$C_RST"
     else
-      printf -v row '  %s%s%s  %-23s %s%s%s  %s%s%s' \
+      printf -v row '  %s%s%s  %-23s %s%s%s %s%s %s%s  %s%s%s' \
         "$C_BOLD" "${KEYS:$i:1}" "$C_RST" \
         "$name" \
         "$STATE_COLOR" "$STATE_TEXT" "$C_RST" \
+        "$C_DIM" "$ctx" "$cost" "$C_RST" \
         "$C_DIM" "$detail" "$C_RST"
     fi
     # T_EL per row here rather than a sed over the whole block: that was one more
@@ -351,12 +1011,51 @@ monitor_draw() {
     i=$((i + 1))
   done
 
+  # The total, under the column it totals. MON_PREFIX - 11 lands the label just
+  # left of the cost field, so the figure sits directly beneath the rows above
+  # it. What the split means is spelled out beside it, because "sub" being an
+  # estimate of a price nobody charged is not something to leave to memory.
+  if [ "$n" -gt 0 ] && [ -n "$X_COST_ALL" ]; then
+    tot=""
+    [ -n "$X_COST_SUB" ] && tot="$tot  sub ~\$$X_COST_SUB"
+    [ -n "$X_COST_API" ] && tot="$tot  api \$$X_COST_API"
+    [ -n "$X_COST_OVER" ] && tot="$tot  extra ~\$$X_COST_OVER"
+    # The breakdown is cut to what is left of the line. It only grows past the
+    # one "sub" figure when there is api or extra spend to show, which is exactly
+    # when it must not push the layout around.
+    pad=$((w - MON_PREFIX + 2))
+    [ ${#tot} -gt "$pad" ] && [ "$pad" -ge 0 ] && tot=${tot:0:$pad}
+    printf -v row '%s%*s %8s%s%s%s%s' \
+      "$C_BOLD" $((MON_PREFIX - 11)) 'total' "\$$X_COST_ALL" "$C_RST" \
+      "$C_DIM" "$tot" "$C_RST"
+    out+="$row$T_EL"$'\n'
+  fi
+
   if [ "$n" -eq 0 ]; then
     hdr=" MONITOR  no sessions found"
     out="  nothing to monitor yet$T_EL"$'\n'
   else
     printf -v hdr ' MONITOR  %d sessions  %d claude  %d working  %d need you  refresh %ss' \
       "$n" "$N_CLAUDE" "$N_WORK" "$N_NEED" "$INTERVAL"
+    # Limits and spend go up here, not in a row: the limits are account-wide, so
+    # every session reports the same pair and a per-row copy would say nothing.
+    # Kept to ASCII -- printf pads this bar by bytes, so a multibyte glyph would
+    # leave the reverse video short of the right edge.
+    # A window reading 100 is FULL, not "nearly there": the utilization behind it
+    # is clamped, so it cannot climb past that to say how far past it went.
+    if [ -n "$X_LIM5" ]; then
+      hdr="$hdr  5h ${X_LIM5}%"
+      [ "$X_LIM5" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
+      [ -n "$X_RST5" ] && hdr="$hdr to $X_RST5"
+    fi
+    if [ -n "$X_LIM7" ]; then
+      hdr="$hdr  7d ${X_LIM7}%"
+      [ "$X_LIM7" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
+      [ -n "$X_RST7" ] && hdr="$hdr to $X_RST7"
+    fi
+    # Spend is not up here any more; it is on the total line under the rows,
+    # beneath the per-session column it adds up.
+    [ -n "$X_NOTICE" ] && hdr="$hdr  ** $X_NOTICE"
   fi
 
   # Redraw in place: home the cursor and erase line by line. A full clear each

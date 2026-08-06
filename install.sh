@@ -126,6 +126,69 @@ link "$DOTFILES/tmux/monitor.sh"             "$HOME/.tmux/monitor.sh"
 link "$DOTFILES/tmux/session-select.sh"      "$HOME/.tmux/session-select.sh"
 link "$DOTFILES/neovim/.config/nvim"         "$HOME/.config/nvim"
 link "$DOTFILES/ghostty/.config/ghostty"     "$HOME/.config/ghostty"
+link "$DOTFILES/claude/statusline.sh"        "$HOME/.claude/statusline.sh"
+link "$DOTFILES/claude/monitor-hook.sh"      "$HOME/.claude/monitor-hook.sh"
+
+# --- Claude Code settings ---
+# settings.json is merged rather than symlinked. Claude writes to it itself --
+# /model, permission changes and enabled plugins all land there -- so a symlink
+# would either be replaced behind your back or drag every runtime toggle into git
+# as a dirty working tree.
+#
+# Exactly two things are shared -- the status line and the hooks -- because those
+# are what the tmux monitor reads. Everything else in that file belongs to
+# whoever owns the laptop: editor mode, model, plugins, notifications, the env
+# block with its tokens, and above all the permission posture (defaultMode and
+# the skip* prompts, which decide how much Claude does without asking). None of
+# it is tracked, and the merge below cannot touch a key it does not mention.
+#
+# statusLine is replaced outright; there is only one of it. Hooks are appended
+# per event instead, because a colleague may well have their own PostToolUse
+# formatter and a plain merge would drop it -- the arrays live under the same key.
+# Any entry pointing at our own script is dropped first, so re-running does not
+# stack up duplicates.
+info "Merging Claude Code status line and hooks..."
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+CLAUDE_SHARED="$DOTFILES/claude/settings.json"
+mkdir -p "$HOME/.claude"
+[ -f "$CLAUDE_SETTINGS" ] || echo '{}' > "$CLAUDE_SETTINGS"
+if ! jq empty "$CLAUDE_SETTINGS" 2>/dev/null; then
+  warn "$CLAUDE_SETTINGS is not valid JSON — skipping, fix it and re-run"
+elif jq -e 'has("env")' "$CLAUDE_SHARED" >/dev/null 2>&1; then
+  # A tracked env block is how a secret would reach the remote. Refuse rather
+  # than merge it, and say why.
+  warn "$CLAUDE_SHARED has an env block — refusing to merge it"
+  warn "keep secrets in the live ~/.claude/settings.json, which is never committed"
+else
+  # Someone else's status line is the one thing here that gets displaced, so say
+  # so rather than let it vanish quietly.
+  PREV_SL=$(jq -r '.statusLine.command // ""' "$CLAUDE_SETTINGS")
+  NEW_SL=$(jq -r '.statusLine.command // ""' "$CLAUDE_SHARED")
+  if [ -n "$PREV_SL" ] && [ "$PREV_SL" != "$NEW_SL" ]; then
+    warn "replacing your status line ($PREV_SL) — the old settings.json is at ${CLAUDE_SETTINGS}.bak"
+  fi
+  cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.bak"
+  # The merge itself lives in claude/merge-settings.sh so it can be tested
+  # directly -- tests/unit/04-claude-settings-merge.test.sh runs it over a set of
+  # configs and checks nothing is lost. Written to a temp file first: a failure
+  # part way through must not leave a truncated settings.json behind.
+  if "$DOTFILES/claude/merge-settings.sh" "$CLAUDE_SETTINGS.bak" "$CLAUDE_SHARED" \
+       > "$CLAUDE_SETTINGS.tmp"; then
+    mv "$CLAUDE_SETTINGS.tmp" "$CLAUDE_SETTINGS"
+    ok "Claude Code status line + hooks installed (everything else left alone)"
+  else
+    rm -f "$CLAUDE_SETTINGS.tmp"
+    warn "merging Claude settings failed — left ${CLAUDE_SETTINGS} untouched"
+  fi
+fi
+
+# User-level skills, one symlink each so Claude's own additions can live
+# alongside the tracked ones.
+mkdir -p "$HOME/.claude/skills"
+for skill in "$DOTFILES"/claude/skills/*/; do
+  [ -d "$skill" ] || continue
+  link "${skill%/}" "$HOME/.claude/skills/$(basename "$skill")"
+done
 
 # --- TPM ---
 if [ ! -d "$HOME/.tmux/plugins/tpm" ]; then
