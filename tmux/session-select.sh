@@ -10,8 +10,9 @@
 #
 # Keys: 1-9 then a-z switch to that session directly. hjkl (or the arrow keys)
 # move the cursor and enter switches to it; h and l change column, so they do
-# nothing while the list is one column wide. esc cancels, and any other key is
-# ignored rather than closing the popup under you.
+# nothing while the list is one column wide. x kills the session under the
+# cursor, after a y/n confirmation. esc cancels, and any other key is ignored
+# rather than closing the popup under you.
 #
 # Tunables: PICKER_FILTER (regex; only sessions matching it are listed, default
 # all), PICKER_WIDTH (popup width, default 56), PICKER_COLW (width of one column
@@ -30,20 +31,27 @@ COLW=${PICKER_COLW:-30}
 COLW_MIN=22   # narrowest a column may get before another one is out of the question
 
 # Digits first -- they match the muscle memory of window indices -- then the
-# alphabet less hjkl, which move the cursor instead. 31 keys in total; anything
-# past that is listed without one, and has to be reached with the cursor.
-KEYS="123456789abcdefgimnopqrstuvwxyz"
+# alphabet less hjkl, which move the cursor instead, and less x, which kills.
+# 30 keys in total; anything past that is listed without one, and has to be
+# reached with the cursor.
+KEYS="123456789abcdefgimnopqrstuvwyz"
 
 # T_HIDE/T_SHOW hide the terminal's own cursor while the picker is up: it would
 # otherwise sit wherever drawing happened to stop -- the bottom right corner --
 # reading as a second, wrong cursor next to the row highlight.
+#
+# T_EL erases to end of line, and ends every line drawn bar the last: a frame is
+# painted over the one before it without clearing first, so a line that has grown
+# shorter -- the footer coming back after a longer question, say -- would keep the
+# tail of what it replaced. The last line needs none; the \033[J that closes a
+# frame takes the rest of that line with it.
 if [ -t 1 ] || [ -n "${PICKER_FORCE_COLOR:-}" ]; then
   C_RST=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_REV=$'\033[7m'
   C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
-  T_HIDE=$'\033[?25l'; T_SHOW=$'\033[?25h'
+  T_HIDE=$'\033[?25l'; T_SHOW=$'\033[?25h'; T_EL=$'\033[K'
 else
   C_RST=; C_BOLD=; C_DIM=; C_REV=; C_GRN=; C_YEL=
-  T_HIDE=; T_SHOW=
+  T_HIDE=; T_SHOW=; T_EL=
 fi
 
 # --- sessions ---------------------------------------------------------------
@@ -80,10 +88,37 @@ picker_client() {
   printf '%s' "$client"
 }
 
+# The session the client is on. #{client_session}, not #{session_name}: outside a
+# pane the latter reports whichever session was last active, which is not
+# necessarily ours.
+picker_current() {
+  tmux display-message ${PICKER_CLIENT:+-c "$PICKER_CLIENT"} \
+    -p '#{client_session}' 2>/dev/null
+}
+
 picker_switch() {
   local target=$1 client=${PICKER_CLIENT:-}
   [ -n "$client" ] || client=$(picker_client) || return 1
   tmux switch-client -c "$client" -t "$target" 2>/dev/null
+}
+
+# Kills session $1, moving the client onto $2 first when $1 is the one it is
+# attached to -- tmux detaches a client whose session is destroyed, which would
+# take this popup down with it.
+#
+# Both go in one tmux run, so they cannot come apart: were the popup to close on
+# the switch, a kill issued after it would never be sent. "=" pins the name to an
+# exact match; without it tmux falls back to prefix matching, and "work" would
+# happily kill "workbench".
+picker_kill() {
+  local target=$1 fallback=${2:-} client=${PICKER_CLIENT:-}
+  [ -n "$client" ] || client=$(picker_client) || client=""
+  if [ -n "$fallback" ] && [ -n "$client" ]; then
+    tmux switch-client -c "$client" -t "=$fallback" \; \
+         kill-session -t "=$target" 2>/dev/null
+  else
+    tmux kill-session -t "=$target" 2>/dev/null
+  fi
 }
 
 # --- rendering --------------------------------------------------------------
@@ -100,6 +135,7 @@ ENTRIES=()    # "windows|attached|name", as listed
 SESSIONS=()   # just the names, same order
 ROWS_USED=0   # rows the last render laid out, i.e. what one column step is worth
 VISIBLE=0     # entries the last render actually drew; the cursor stays within them
+PROMPT=""     # question to put where the footer goes, while one is being asked
 
 # Snapshots the list. The cursor and the drawing have to agree on one list, so
 # they both work from this rather than each running tmux themselves.
@@ -204,7 +240,7 @@ render() {
       idx=$(( c * rows + r ))
       [ "$idx" -lt "$n" ] && line+="${cells[$idx]}"
     done
-    out+="$line"$'\n'
+    out+="$line$T_EL"$'\n'
   done
   ROWS_USED=$rows   # h and l step the cursor by a whole column
 
@@ -215,14 +251,26 @@ render() {
       printf '%s%-*s%s\n\n' "${C_REV}${C_BOLD}" "$w" \
         "$(printf ' SESSIONS  %d' "$n")" "$C_RST"
       printf '%s' "$out"
-      printf '\n%s  %sj/k%s move  %sh/l%s column  %senter%s switch  %sesc%s cancel%s\n' \
-        "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
-        "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST"
-      printf '%s  %s1-9/a-z%s jump directly   %s*%s here   %s+%s attached%s' \
-        "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
-        "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST"
+      # A question takes the footer's place rather than a line of its own: the
+      # popup is sized to the frame it opened with, and one more line would push
+      # the top of the list out of it. The trailing \033[J wipes the second
+      # footer line, so the two are never on screen together.
+      if [ -n "$PROMPT" ]; then
+        printf '%s\n%s%s\n' "$T_EL" "$PROMPT" "$T_EL"
+      else
+        printf '%s\n%s  %sj/k%s move  %sh/l%s column  %senter%s switch  %sx%s kill%s%s\n' \
+          "$T_EL" \
+          "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
+          "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST" "$T_EL"
+        printf '%s  %s1-9/a-z%s jump   %sesc%s cancel   %s*%s here   %s+%s attached%s' \
+          "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
+          "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST"
+      fi
     else
       printf '%s' "${out%$'\n'}"
+      # No footer to borrow on a client this short, so the question goes over the
+      # last row of the list; the render that follows the answer puts it back.
+      [ -n "$PROMPT" ] && printf '\r%s' "$PROMPT"
     fi
     printf '\033[J'
   } 2>/dev/null
@@ -272,6 +320,22 @@ picker_key() {
   printf '%s' "$k"
 }
 
+# Puts question $1 where the footer goes and waits for one key, left in ASK_KEY.
+# The rest of the arguments are render's own, forwarded as they came.
+#
+# ASK_KEY is a global because render writes to the terminal: capturing the answer
+# with $(...) would run the redraw in a subshell and swallow the question along
+# with it.
+ASK_KEY=""
+picker_ask() {
+  local msg=$1
+  shift
+  PROMPT=$msg
+  render "$@"
+  ASK_KEY=$(picker_key)
+  PROMPT=""
+}
+
 # `read -s` only silences the keys it reads itself, so anything typed while the
 # list is being drawn is echoed by the terminal -- holding j paints "jjjjj" over
 # the popup. Echo goes off for as long as the picker is up instead, and the
@@ -294,10 +358,8 @@ picker_raw_off() {
 
 run_picker() {
   local cur key idx n lim sel selname leave moved w cols chrome maxrows
-  # #{client_session}, not #{session_name}: outside a pane the latter reports
-  # whichever session was last active, which is not necessarily ours.
-  cur=$(tmux display-message ${PICKER_CLIENT:+-c "$PICKER_CLIENT"} \
-          -p '#{client_session}' 2>/dev/null)
+  local killreq target neighbour landing name nw msg
+  cur=$(picker_current)
   # The layout comes from whoever sized the popup, so it matches the box it was
   # given.
   w=$(term_cols)
@@ -329,6 +391,7 @@ run_picker() {
     key=$(picker_key) || break
     leave=""
     moved=""
+    killreq=""
     # Held keys arrive faster than the list can be redrawn, so everything already
     # queued is applied before drawing again -- otherwise the cursor crawls a
     # frame behind the keyboard and keeps moving after the key comes up.
@@ -340,6 +403,9 @@ run_picker() {
         k)       sel=$(( (sel - 1 + lim) % lim )); moved=1 ;;
         l)       moved=1; [ $((sel + ROWS_USED)) -lt "$lim" ] && sel=$((sel + ROWS_USED)) ;;
         h)       moved=1; [ $((sel - ROWS_USED)) -ge 0 ] && sel=$((sel - ROWS_USED)) ;;
+        # Asking has to happen with the screen in hand, so it waits until the
+        # keys queued behind this one have been applied and the drain is over.
+        x)       killreq=1 ;;
         *)
           idx=$(key_index "$key")
           if [ "$idx" -ge 0 ] && [ "$idx" -lt "$n" ]; then
@@ -348,10 +414,54 @@ run_picker() {
           fi
           ;;    # anything else: ignored, so a stray key does not close the popup
       esac
-      [ -n "$leave" ] && break
+      { [ -n "$leave" ] || [ -n "$killreq" ]; } && break
       key=$(picker_key 0.001) || break
     done
     [ -n "$leave" ] && break
+
+    # x: kill the session under the cursor, once it has been confirmed. The
+    # cursor is aimed at the next session beforehand, so it lands on the entry
+    # that takes the dead one's place instead of jumping back to the top.
+    if [ -n "$killreq" ] && [ "$n" -gt 0 ]; then
+      target=${SESSIONS[$sel]}
+      neighbour=$target
+      if [ "$n" -le 1 ]; then
+        # Killing it would end the server, and the picker with it.
+        printf -v msg '  %sthe last session cannot be killed%s' "$C_DIM" "$C_RST"
+        picker_ask "$msg" "$cur" "$w" "$cols" "$chrome" "$maxrows" "$sel"
+      else
+        neighbour=${SESSIONS[$(( (sel + 1) % n ))]}
+        # The question borrows the footer's row, so it has to fit on it: a line
+        # that wrapped would push the top of the list out of the popup. The name
+        # gives up whatever room the rest of the line does not need.
+        nw=$((w - 15))
+        [ "$nw" -lt 4 ] && nw=4
+        name=$target
+        [ ${#name} -gt "$nw" ] && name=${name:0:nw}
+        printf -v msg '  kill %s%s%s?  %sy / n%s' \
+          "$C_YEL" "$name" "$C_RST" "$C_DIM" "$C_RST"
+        picker_ask "$msg" "$cur" "$w" "$cols" "$chrome" "$maxrows" "$sel"
+        if [ "$ASK_KEY" = y ] || [ "$ASK_KEY" = Y ]; then
+          if [ "$target" = "$cur" ]; then
+            picker_kill "$target" "$neighbour"
+          else
+            picker_kill "$target"
+          fi
+          # Where the client ended up is the server's answer, not one worth
+          # guessing from whether the kill reported success.
+          cur=$(picker_current)
+        fi
+      fi
+      picker_load
+      n=${#SESSIONS[@]}
+      # The cursor moves on to the neighbour only if the session it was on is
+      # really gone; a cancelled -- or failed -- kill leaves it where it was.
+      landing=$target
+      [ "$(picker_index_of "$target")" -lt 0 ] && landing=$neighbour
+      sel=$(picker_index_of "$landing")
+      [ "$sel" -ge 0 ] || sel=0
+      continue
+    fi
 
     # Moving the cursor cannot have changed the list, so it does not pay for the
     # round trip to the server -- that is another 12ms between key and redraw.
