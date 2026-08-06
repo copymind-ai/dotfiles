@@ -10,6 +10,12 @@
 # parsing the rendered line: the status bar truncates at narrow widths, and
 # system notices share the row and can cut it short.
 #
+# There are two files, and they answer different questions. The per-pane export
+# says what is true of the session in that pane right now, and dies with it. The
+# spend ledger says what has been spent, day by day, and outlives every session
+# in it -- which is the only way the monitor can total a day, a week or a month
+# rather than whatever happens to still be running.
+#
 # Two things this deliberately does not report: whether Claude is working, and
 # whether it is waiting on a prompt. There is no field for the first, and the
 # status line is not rendered at all while a permission dialog is up -- verified,
@@ -19,7 +25,7 @@ set -uo pipefail
 
 input=$(cat)
 
-ctx=-1 cost=0 lim5=-1 lim7=-1 rst5=0 rst7=0 sub=-1 model='?' session='' now=0
+ctx=-1 cost=0 lim5=-1 lim7=-1 rst5=0 rst7=0 sub=-1 model='?' session='' now=0 day=''
 
 # One jq for all of it: this runs on every assistant message, so it gets one
 # fork and no more. -1 stands in for absent -- used_percentage is null until the
@@ -28,7 +34,7 @@ ctx=-1 cost=0 lim5=-1 lim7=-1 rst5=0 rst7=0 sub=-1 model='?' session='' now=0
 # Joined on a unit separator rather than @tsv. Tab is IFS whitespace, so a run of
 # them collapses to one and an empty field in the middle -- a session with no id
 # yet -- silently shifts every value after it into the wrong variable.
-IFS=$'\037' read -r ctx cost lim5 lim7 rst5 rst7 sub model session now < <(
+IFS=$'\037' read -r ctx cost lim5 lim7 rst5 rst7 sub model session now day < <(
   printf '%s' "$input" | jq -r '[
     (.context_window.used_percentage // -1 | floor),
     (.cost.total_cost_usd // 0),
@@ -47,7 +53,15 @@ IFS=$'\037' read -r ctx cost lim5 lim7 rst5 rst7 sub model session now < <(
      else -1 end),
     (.model.display_name // "?"),
     (.session_id // ""),
-    (now | floor)
+    (now | floor),
+    # The local calendar day, for the spend ledger below. Taken from jq rather
+    # than from date, because this runs on every assistant message and jq is
+    # already forked -- a second fork would be a third of what the whole script
+    # costs, for one string. An old jq without strflocaltime fails the entire
+    # filter and every value falls back to the defaults above: the ledger then
+    # skips, and nothing else notices.
+    # (No apostrophes in here. The filter is single-quoted, so one would end it.)
+    (now | strflocaltime("%Y-%m-%d"))
   ] | map(tostring) | join("\u001f")' 2>/dev/null
 ) || true
 
@@ -64,6 +78,89 @@ to_cents() {
   case $frac in ''|*[!0-9]*) frac=0 ;; esac
   CENTS=$((10#$whole * 100 + 10#$frac))
 }
+
+# --- spend ledger -------------------------------------------------------------
+# What the monitor's per-pane export cannot give it: spend that outlives the
+# session that earned it. The .meta file below holds one live session's running
+# total and is overwritten by whatever runs in that pane next, so a day's spend
+# disappears as its sessions do. This leaves a durable record beside it.
+#
+# One file per session per day, "<day>.<session id>", holding the cents that
+# session has spent on that day. Per session because two sessions writing one
+# shared daily file would lose each other's updates; per day because that is the
+# grain the monitor totals by, and it means a session running past midnight
+# splits across the boundary on its own rather than being counted wherever it
+# happened to start.
+#
+# The file carries its own arithmetic, so no state is needed anywhere else:
+# "last" is the session's cumulative cost as of the previous write and "spent"
+# the accrual so far, which advances by the difference each time. Truncation to
+# cents telescopes -- successive differences of truncated totals add back up to
+# the truncated total -- so a run of sub-cent turns is not rounded away.
+#
+# Not gated on tmux, unlike the export below: this one is keyed by session id,
+# so a Claude run outside tmux counts toward the day like any other.
+L_SPENT=0; L_LAST=0
+l_read() {
+  L_SPENT=0; L_LAST=0
+  [ -r "$1" ] || return 1
+  while IFS='=' read -r _k _v; do
+    case $_k in
+      spent) L_SPENT=$_v ;;
+      last)  L_LAST=$_v ;;
+    esac
+  done < "$1"
+  case $L_SPENT in ''|*[!0-9]*) L_SPENT=0 ;; esac
+  case $L_LAST in ''|*[!0-9]*) L_LAST=0 ;; esac
+  return 0
+}
+
+if [ -n "$session" ] && [ -n "$day" ] && [ "$day" != null ]; then
+  ldir=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}/spend
+  if mkdir -p "$ldir" 2>/dev/null; then
+    l_spent=0 l_last=0
+    if l_read "$ldir/$day.$session"; then
+      l_spent=$L_SPENT; l_last=$L_LAST
+    else
+      # First write of a day for this session. "last" has to carry over from the
+      # day it wrote before, or the difference is measured against zero and the
+      # session drops its entire lifetime cost onto whatever day it happens to
+      # cross into -- a session left running past midnight would be counted twice
+      # over. The glob is sorted, so the newest earlier day wins, and this runs
+      # once per session per day.
+      #
+      # Nothing to carry from on the very first write of all, so a session that
+      # was already running when this was installed puts its history so far into
+      # that day. Once, at install, and only for what was already up.
+      for _f in "$ldir"/*."$session"; do
+        [ -f "$_f" ] || continue
+        _d=${_f##*/}; _d=${_d%%.*}
+        [[ $_d < $day ]] || continue
+        l_read "$_f" && l_last=$L_LAST
+      done
+    fi
+
+    to_cents "$cost"
+    # A cost that went backwards is a session resumed from an earlier point, or
+    # one whose id was reused: rebase on the new figure rather than accrue a
+    # negative. "last" is rewritten either way, so the next run measures from
+    # where this one actually stood.
+    [ "$CENTS" -gt "$l_last" ] && l_spent=$((l_spent + CENTS - l_last))
+
+    # Temp file and rename, like the export: the monitor reads these on a timer
+    # and a half-written one would total as a half-empty one. "sub" rides along
+    # unused by the monitor's own columns, so a later split of the day's spend
+    # into subscription and API does not need a new ledger format.
+    ltmp="$ldir/.$day.$session.$$"
+    if printf 'spent=%s\nlast=%s\nsub=%s\nts=%s\n' \
+         "$l_spent" "$CENTS" "$sub" "$now" > "$ltmp" 2>/dev/null
+    then
+      mv -f "$ltmp" "$ldir/$day.$session" 2>/dev/null || rm -f "$ltmp" 2>/dev/null
+    else
+      rm -f "$ltmp" 2>/dev/null
+    fi
+  fi
+fi
 
 # --- export -----------------------------------------------------------------
 # Keyed by tmux server pid and pane id together. Pane numbering restarts with a

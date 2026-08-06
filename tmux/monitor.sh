@@ -21,6 +21,10 @@
 # $CLAUDE_MONITOR_DIR, and those are merged in. Sessions without them lose the
 # extra columns and nothing else.
 #
+# The status line also keeps a ledger there of what every session has spent, day
+# by day, which outlives the sessions themselves: that is where the day, week,
+# month and all-time figures on the total line come from.
+#
 # Tunables: MONITOR_INTERVAL (seconds, default 2), MONITOR_WINDOW (preferred
 # window name, default "claude"), MONITOR_FILTER (regex; only sessions matching
 # it are listed, default all), MONITOR_SESSION (default "monitor"),
@@ -325,9 +329,20 @@ monitor_read_kv() {
   return 0
 }
 
-# Fills the X_* arrays for every session. One `date` for the whole tick: bash 3.2
-# has no $EPOCHSECONDS, and a fork per session to age a file would cost more than
-# reading them all.
+# The tick's clock, read once and shared: bash 3.2 has no $EPOCHSECONDS, and both
+# the age of an exported state and the ledger's idea of "today" need it. A fork
+# per session -- or one per consumer -- would cost more than reading every file
+# they look at.
+MON_NOW=0
+MON_DAY=""
+monitor_clock() {
+  local out
+  out=$(date '+%s %F' 2>/dev/null) || return 1
+  read -r MON_NOW MON_DAY <<<"$out"
+  [ -n "$MON_NOW" ]
+}
+
+# Fills the X_* arrays for every session.
 monitor_read_exports() {
   local i n=${#SESSIONS[@]} now base limts=0 subc=0 apic=0 overc=0 allc=0
   local seen_sub="" seen_api="" seen_any=""
@@ -341,7 +356,8 @@ monitor_read_exports() {
   done
   [ "$n" -gt 0 ] && [ -d "$MONITOR_DIR" ] || return 0
 
-  now=$(date +%s 2>/dev/null) || return 0
+  now=$MON_NOW
+  [ "$now" -gt 0 ] 2>/dev/null || return 0
   i=0
   while [ "$i" -lt "$n" ]; do
     base="$MONITOR_DIR/${SERVER_PID}-${P_PANE[$i]#%}"
@@ -463,6 +479,173 @@ monitor_cents() {
   case $whole in ''|*[!0-9]*) whole=0 ;; esac
   case $frac in ''|*[!0-9]*) frac=0 ;; esac
   CENTS=$((10#$whole * 100 + 10#$frac))
+}
+
+# --- spend ledger --------------------------------------------------------------
+#
+# What claude/statusline.sh files under $MONITOR_DIR/spend: one "<day>.<session>"
+# per session per day, holding the cents that session spent on that day. Unlike
+# the per-pane exports, these outlive the session that wrote them, which is the
+# whole point -- the cost column adds up what is running now, and this adds up
+# what has been spent, whether or not anything is still up to show for it.
+#
+# Today's spend is inside these totals as well, since a live session rewrites its
+# file as it goes. So "total" and "today" overlap on purpose: one is the sessions
+# on screen, the other the day they are part of.
+#
+# Each file records how its session was paying as well, so the windows carry the
+# same sub/api split as the live line rather than one lump per window.
+LEDGER_DIR="$MONITOR_DIR/spend"
+
+# One row per window, in the order they are drawn. Already formatted, like the
+# other totals: the draw does no arithmetic.
+SPEND_LBL=(today 7d 30d all)
+SPEND_ALL=("" "" "" "")
+SPEND_SUB=("" "" "" "")
+SPEND_API=("" "" "" "")
+
+# Days before today are frozen -- a session past midnight writes to the new day's
+# file -- so their sums are computed once and held until the day rolls over,
+# leaving each tick with only today's handful of files to read. Indexed 0..2 for
+# 7d, 30d and all-time, today excluded from every one of them.
+LDG_DAY=""     # the day those sums were computed for
+LDG_P_ALL=(0 0 0)
+LDG_P_SUB=(0 0 0)
+LDG_P_API=(0 0 0)
+LDG_CUT7=""    # the oldest day each window includes, blank if date could not say
+LDG_CUT30=""
+LDG_ANY=""     # whether the ledger holds anything at all; see below
+
+# $1 days back as a local date, BSD spelling first and GNU second -- the same
+# order as monitor_fmt_reset, and for the same reason.
+DAY_AGO=""
+monitor_day_ago() {
+  DAY_AGO=$(date -v-"$1"d '+%F' 2>/dev/null) ||
+    DAY_AGO=$(date -d "$1 days ago" '+%F' 2>/dev/null) ||
+    DAY_AGO=""
+}
+
+day_ge() { [ "$1" = "$2" ] || [[ $1 > $2 ]]; }
+
+# Cents and payment kind out of one ledger file. Read by bash itself, so a day of
+# files costs no forks at all. LDG_SUB is 1 subscription, 0 API-billed, -1 for a
+# session that never got far enough to say -- the same three values the status
+# line exports, and the third is counted in the total and in neither column.
+LDG_CENTS=0
+LDG_SUB=-1
+monitor_ledger_file() {
+  local k v
+  LDG_CENTS=0; LDG_SUB=-1
+  [ -r "$1" ] || return 1
+  while IFS='=' read -r k v; do
+    case $k in
+      spent) LDG_CENTS=$v ;;
+      sub)   LDG_SUB=$v ;;
+    esac
+  done < "$1"
+  case $LDG_CENTS in ''|*[!0-9]*) LDG_CENTS=0 ;; esac
+  case $LDG_SUB in 0|1) ;; *) LDG_SUB=-1 ;; esac
+  return 0
+}
+
+# Adds the file just read into window $1 of the cached past sums.
+monitor_ledger_add() {
+  LDG_P_ALL[$1]=$((${LDG_P_ALL[$1]} + LDG_CENTS))
+  case $LDG_SUB in
+    1) LDG_P_SUB[$1]=$((${LDG_P_SUB[$1]} + LDG_CENTS)) ;;
+    0) LDG_P_API[$1]=$((${LDG_P_API[$1]} + LDG_CENTS)) ;;
+  esac
+}
+
+# Sums every day but today, for as long as today lasts.
+monitor_ledger_rebuild() {
+  local f b d
+  LDG_DAY=$MON_DAY
+  LDG_P_ALL=(0 0 0); LDG_P_SUB=(0 0 0); LDG_P_API=(0 0 0)
+  monitor_day_ago 6;  LDG_CUT7=$DAY_AGO
+  monitor_day_ago 29; LDG_CUT30=$DAY_AGO
+  [ -d "$LEDGER_DIR" ] || return 0
+  for f in "$LEDGER_DIR"/*; do
+    [ -f "$f" ] || continue
+    b=${f##*/}
+    d=${b%%.*}
+    # A name that is not "<iso day>.<something>" is not ours: a temp file caught
+    # mid-rename, or whatever else ends up in the directory.
+    case $b in "$d") continue ;; esac
+    case $d in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+      *) continue ;;
+    esac
+    LDG_ANY=1
+    [ "$d" = "$MON_DAY" ] && continue
+    monitor_ledger_file "$f" || continue
+    monitor_ledger_add 2
+    [ -n "$LDG_CUT30" ] && day_ge "$d" "$LDG_CUT30" && monitor_ledger_add 1
+    [ -n "$LDG_CUT7" ] && day_ge "$d" "$LDG_CUT7" && monitor_ledger_add 0
+  done
+  return 0
+}
+
+# "$1 cents" -> LDG_FMT="12.34". One place, because the rows below want it a
+# dozen times and a $(...) each would be a dozen forks a tick.
+LDG_FMT=""
+monitor_ledger_fmt() { printf -v LDG_FMT '%d.%02d' $(($1 / 100)) $(($1 % 100)); }
+
+# Today's files every tick, the rest from the cache above, then the four rows.
+monitor_read_ledger() {
+  local f i t_all=0 t_sub=0 t_api=0 c
+  SPEND_ALL=("" "" "" ""); SPEND_SUB=("" "" "" ""); SPEND_API=("" "" "" "")
+  [ -n "$MON_DAY" ] && [ -d "$LEDGER_DIR" ] || return 0
+  [ "$LDG_DAY" = "$MON_DAY" ] || monitor_ledger_rebuild
+
+  for f in "$LEDGER_DIR/$MON_DAY".*; do
+    [ -f "$f" ] || continue
+    LDG_ANY=1
+    monitor_ledger_file "$f" || continue
+    t_all=$((t_all + LDG_CENTS))
+    case $LDG_SUB in
+      1) t_sub=$((t_sub + LDG_CENTS)) ;;
+      0) t_api=$((t_api + LDG_CENTS)) ;;
+    esac
+  done
+
+  # An empty ledger reads as unknown rather than zero, the same way a session
+  # that has not reported leaves its cost column blank: nobody has spent nothing
+  # today, they have just not installed the exporter yet. Once there is a single
+  # file, a quiet day is a real $0.00 and says so.
+  [ -n "$LDG_ANY" ] || return 0
+
+  # Row 0 is today alone; the rest are today plus the days behind them, which is
+  # why every window is built from the same pair rather than summed twice.
+  i=0
+  while [ "$i" -lt 4 ]; do
+    # 7d and 30d are dropped when date could not work out where they start --
+    # better an absent row than one that quietly means something else.
+    if { [ "$i" = 1 ] && [ -z "$LDG_CUT7" ]; } ||
+       { [ "$i" = 2 ] && [ -z "$LDG_CUT30" ]; }; then
+      i=$((i + 1)); continue
+    fi
+    case $i in
+      0) c=0 ;;                 # today: nothing behind it
+      *) c=$((i - 1)) ;;        # 7d, 30d, all: cached window i-1
+    esac
+
+    if [ "$i" = 0 ]; then
+      monitor_ledger_fmt "$t_all"; SPEND_ALL[$i]=$LDG_FMT
+      [ "$t_sub" -gt 0 ] && { monitor_ledger_fmt "$t_sub"; SPEND_SUB[$i]=$LDG_FMT; }
+      [ "$t_api" -gt 0 ] && { monitor_ledger_fmt "$t_api"; SPEND_API[$i]=$LDG_FMT; }
+    else
+      monitor_ledger_fmt $((${LDG_P_ALL[$c]} + t_all)); SPEND_ALL[$i]=$LDG_FMT
+      if [ $((${LDG_P_SUB[$c]} + t_sub)) -gt 0 ]; then
+        monitor_ledger_fmt $((${LDG_P_SUB[$c]} + t_sub)); SPEND_SUB[$i]=$LDG_FMT
+      fi
+      if [ $((${LDG_P_API[$c]} + t_api)) -gt 0 ]; then
+        monitor_ledger_fmt $((${LDG_P_API[$c]} + t_api)); SPEND_API[$i]=$LDG_FMT
+      fi
+    fi
+    i=$((i + 1))
+  done
+  return 0
 }
 
 # Reconciles what the screen says with what Claude's own events say.
@@ -909,6 +1092,52 @@ monitor_sel_sync() {
   SEL_NAME=${SESSIONS[$SEL]}
 }
 
+# One totals row -- "total active", then "today", "7d" and the rest -- into
+# ROW_OUT, ready to append to the frame. Takes the terminal width rather than
+# reading the caller's, since bash would let it and that is exactly the sort of
+# thing that breaks quietly when the caller is refactored.
+#
+# $2 is the word that opens the block, carried by the first row only: the rows
+# under it are the same total over a longer reach, so repeating "total" on each
+# would be four words of nothing. Every window label is right-aligned to the same
+# column whether or not it has that word in front of it, so the labels line up
+# and "total" hangs off the left of the first one.
+#
+# The split goes into fixed-width fields so the rows read as a table instead of
+# as four sentences of different lengths. A column with nothing in it is left
+# blank rather than zeroed: no api spend and no api sessions look the same from
+# here, and neither is worth printing $0.00 for.
+ROW_OUT=""
+monitor_total_row() {
+  local width=$1 mark=$2 lbl=$3 all=$4 sub=$5 api=$6 extra=$7
+  local bits sf af ef pad row lead="" text=$lbl
+  printf -v sf '%-16s' "${sub:+sub ~\$$sub}"
+  printf -v af '%-15s' "${api:+api \$$api}"
+  ef=${extra:+extra ~\$$extra}
+  bits="  $sf$af$ef"
+  while [ -n "$bits" ]; do
+    case ${bits: -1} in ' ') bits=${bits%?} ;; *) break ;; esac
+  done
+  # Cut to what is left of the line, like the detail column above.
+  pad=$((width - MON_PREFIX + 2))
+  [ ${#bits} -gt "$pad" ] && [ "$pad" -ge 0 ] && bits=${bits:0:$pad}
+
+  # The alignment is worked out here rather than left to a %*s, because the word
+  # in front is bold and the label is not: one field cannot hold both, and the
+  # escape sequences would be counted as width if it did.
+  if [ -n "$mark" ]; then
+    text="$mark $lbl"
+    lead="${C_BOLD}${mark}${C_RST} "
+  fi
+  pad=$((MON_PREFIX - 11 - ${#text}))
+  [ "$pad" -lt 0 ] && pad=0
+  printf -v row '%*s%s%s %s%8s%s%s%s%s' \
+    "$pad" '' "$lead" "$lbl" \
+    "$C_BOLD" "\$$all" "$C_RST" \
+    "$C_DIM" "$bits" "$C_RST"
+  ROW_OUT="$row$T_EL"$'\n'
+}
+
 ROW_STATE=()   # per session, same order as SESSIONS
 ROW_DETAIL=()
 N_CLAUDE=0
@@ -922,10 +1151,12 @@ N_NEED=0
 # instant.
 monitor_collect() {
   local i n
+  monitor_clock
   monitor_snapshot
   monitor_sel_sync
   monitor_busy_titles
   monitor_read_exports
+  monitor_read_ledger
 
   ROW_STATE=(); ROW_DETAIL=()
   N_CLAUDE=0; N_WORK=0; N_NEED=0
@@ -955,7 +1186,7 @@ monitor_collect() {
 # row with printf -v, so a keystroke that only moves the cursor costs a redraw and
 # nothing else.
 monitor_draw() {
-  local h w i n state detail maxd pad row out="" hdr name ctx cost tot
+  local h w i n state detail maxd pad row out="" hdr name ctx cost mark
   read -r h w <<<"$(term_size)"
 
   # What every column before the detail takes: two spaces, the key, two spaces,
@@ -1011,24 +1242,37 @@ monitor_draw() {
     i=$((i + 1))
   done
 
-  # The total, under the column it totals. MON_PREFIX - 11 lands the label just
-  # left of the cost field, so the figure sits directly beneath the rows above
-  # it. What the split means is spelled out beside it, because "sub" being an
-  # estimate of a price nobody charged is not something to leave to memory.
-  if [ "$n" -gt 0 ] && [ -n "$X_COST_ALL" ]; then
-    tot=""
-    [ -n "$X_COST_SUB" ] && tot="$tot  sub ~\$$X_COST_SUB"
-    [ -n "$X_COST_API" ] && tot="$tot  api \$$X_COST_API"
-    [ -n "$X_COST_OVER" ] && tot="$tot  extra ~\$$X_COST_OVER"
-    # The breakdown is cut to what is left of the line. It only grows past the
-    # one "sub" figure when there is api or extra spend to show, which is exactly
-    # when it must not push the layout around.
-    pad=$((w - MON_PREFIX + 2))
-    [ ${#tot} -gt "$pad" ] && [ "$pad" -ge 0 ] && tot=${tot:0:$pad}
-    printf -v row '%s%*s %8s%s%s%s%s' \
-      "$C_BOLD" $((MON_PREFIX - 11)) 'total' "\$$X_COST_ALL" "$C_RST" \
-      "$C_DIM" "$tot" "$C_RST"
-    out+="$row$T_EL"$'\n'
+  # The totals, one row per window, under the column they total. MON_PREFIX - 11
+  # lands each label just left of the cost field, so every figure sits directly
+  # beneath the per-session costs above it and beneath each other.
+  #
+  # "active" is the sessions on screen, and is the only row that can carry
+  # "extra": overage is worked out from the live exports, which the ledger, being
+  # a record of what was spent rather than of how, does not keep. The rest are
+  # the ledger's, and count every session that has run in the window whether or
+  # not anything is still up to show for it -- so "active" and "today" overlap,
+  # and are meant to.
+  if [ "$n" -gt 0 ]; then
+    # "total" goes on the first row drawn, whichever that turns out to be: with
+    # no live cost to report the block opens on "today" instead, and the word
+    # belongs to the block rather than to any one window.
+    mark=total
+    if [ -n "$X_COST_ALL" ]; then
+      monitor_total_row "$w" "$mark" active \
+        "$X_COST_ALL" "$X_COST_SUB" "$X_COST_API" "$X_COST_OVER"
+      out+="$ROW_OUT"
+      mark=""
+    fi
+    i=0
+    while [ "$i" -lt 4 ]; do
+      if [ -n "${SPEND_ALL[$i]}" ]; then
+        monitor_total_row "$w" "$mark" "${SPEND_LBL[$i]}" \
+          "${SPEND_ALL[$i]}" "${SPEND_SUB[$i]}" "${SPEND_API[$i]}" ""
+        out+="$ROW_OUT"
+        mark=""
+      fi
+      i=$((i + 1))
+    done
   fi
 
   if [ "$n" -eq 0 ]; then
@@ -1206,11 +1450,16 @@ open_session() {
   fi
 }
 
-case ${1:-} in
-  --run)      run_monitor ;;
-  ''|--open)  open_session ;;
-  *)
-    printf 'usage: %s [--open|--run]\n' "$(basename "$0")" >&2
-    exit 2
-    ;;
-esac
+# Guarded so the file can be sourced for its functions -- which the tests do, to
+# reach the ledger arithmetic without a terminal. Run normally, this is the only
+# thing that happens.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case ${1:-} in
+    --run)      run_monitor ;;
+    ''|--open)  open_session ;;
+    *)
+      printf 'usage: %s [--open|--run]\n' "$(basename "$0")" >&2
+      exit 2
+      ;;
+  esac
+fi

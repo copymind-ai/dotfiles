@@ -25,7 +25,7 @@ dotfiles/
 ├── claude/
 │   ├── settings.json              # Shared: statusLine + hooks only, nothing else
 │   ├── merge-settings.sh          # Merges the above into an existing config
-│   ├── statusline.sh              # Claude Code status line + context/cost export
+│   ├── statusline.sh              # Claude Code status line + context/cost export + spend ledger
 │   ├── monitor-hook.sh            # Claude Code hooks -> session state export
 │   └── skills/                    # User-level skills, symlinked one by one
 ├── ghostty/.config/ghostty/
@@ -211,7 +211,11 @@ its Claude window is doing right now.
   5  graspen-course-ai       idle        35%   $39.75  Check AI-at-work course generation status
   ...
   f  zz-other                other              sleep
-                                       total  $499.01  sub ~$499.01
+                               total active  $499.01  sub ~$487.01   api $12.00     extra ~$4.25
+                                      today  $541.20  sub ~$521.20   api $20.00
+                                         7d $1180.05  sub ~$1140.05  api $40.00
+                                        30d $2620.11  sub ~$2540.11  api $80.00
+                                        all $8841.66  sub ~$8601.66  api $240.00
 
   j/k move   enter jump   1-9/a-z jump directly   r refresh   q quit
 ```
@@ -242,17 +246,34 @@ context window that session has used, and what it has cost. Both are blank for a
 session that has not answered yet or has no exporter installed — blank means
 unknown, which is not the same as zero.
 
-The line under the rows totals the cost column:
+Under the rows is one line per window, each totalling the cost column over a
+longer reach than the one above it:
 
-- **`total $499.01`** — every session added up.
-- **`sub ~$499.01`** — what the subscription absorbed, priced at API rates.
+- **`active`** — the sessions on screen, added up. The only row that dies with
+  them. It also carries the word `total` for the block; the rows under it are the
+  same total over a longer reach, so they do not repeat it.
+- **`today`**, **`7d`**, **`30d`**, **`all`** — every session that has run in
+  that window, whether or not it is still up. `7d` and `30d` are calendar days
+  including today, so `7d` on a Monday reaches back to the previous Tuesday.
+  These come from the ledger — see [spend over time](#spend-over-time).
+
+`active` and `today` overlap on purpose: the live sessions are part of the day
+they are running in. Each row is then split by how the spend was paid for:
+
+- **`sub ~$487.01`** — what the subscription absorbed, priced at API rates.
   **This is not a bill.** On a subscription nothing is charged for it; the window
   percentages are the real constraint. The tilde is there because it is an
   estimate of a price nobody charged.
-- **`api $12.34`** — appears only when some session is authenticated to an
-  API-billed account instead of the subscription. That figure is money.
-- **`extra ~$4.25`** — spend attributed to a window that was already full. Shown
-  once there is some.
+- **`api $12.00`** — spend from a session authenticated to an API-billed account
+  instead of the subscription. No tilde: that figure is money.
+- **`extra ~$4.25`** — spend attributed to a window that was already full. Only
+  `active` can show it: it is worked out from the live exports, and the ledger
+  records what was spent rather than how.
+
+A column is left blank when nothing landed in it, the same as an empty cost cell
+in the rows above — no api spend and no api sessions look alike from here, and
+neither is worth a `$0.00`. A row whose spend never got classified still counts
+in its total, so a total can exceed `sub` plus `api`.
 
 Sessions are sorted into `sub`/`api` by whether Claude sends them `rate_limits`,
 which only goes to a Claude.ai subscription. A personal subscription never
@@ -272,6 +293,42 @@ The header keeps what is account-wide, since every session reports the same pair
   so 100 is as high as it goes.
 - **`** You're close to your usage limit`** — a limit notice read off some
   session's screen.
+
+### Spend over time
+
+The `active` row only knows about sessions that are still up, because it adds up
+the cost column and that comes from the per-pane exports, which the next session
+in that pane overwrites. So `claude/statusline.sh` also keeps a ledger, in
+`~/.claude/monitor/spend`: one small file per session per day, named
+`<day>.<session id>`, holding the cents that session spent on that day and
+whether it was paying by subscription or by API key.
+
+Each write compares the session's cumulative cost against what the file last
+saw and adds the difference. On the first write of a new day the figure to
+measure against is carried over from the day that session wrote before, or a
+session left running past midnight would drop its whole history onto the new day.
+A `/clear` or a resume taking the cost backwards rebases instead of accruing a
+negative.
+
+The monitor sums today's files on every tick and the older ones once a day —
+days before today cannot change — so the four rows cost a handful of file reads
+and no forks.
+
+Worth knowing:
+
+- **It starts when it is installed.** There is no history before the first write;
+  the numbers are only complete from that day forward.
+- **It counts sessions outside tmux too.** The ledger is keyed by session id
+  rather than by pane, so anything running `claude` on this machine lands in it.
+  That also means it is this machine only.
+- **`today` overlaps `active`.** The live sessions are part of the day they are
+  running in, and are counted in both rows.
+- **A session already running when it was installed** had no earlier file to
+  carry from, so its history up to that point landed on that first day. Once,
+  at install, and only for what was already up.
+- **Nothing is ever pruned.** A few dozen files a day is nothing until it is;
+  `rm ~/.claude/monitor/spend/2025-*` is the whole cleanup story, at the cost of
+  those days leaving `all`.
 
 ### Extra usage
 
