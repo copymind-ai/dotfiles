@@ -213,14 +213,17 @@ Notes:
 its Claude window is doing right now.
 
 ```
- MONITOR  15 sessions  11 claude  1 working  1 need you  5 agents  refresh 2s  5h 17% to 5:20PM  7d 28% to Tue 11PM
+ MONITOR  15 sessions  11 claude  1 working  1 need you  5 agents  refresh 2s
+
+  os@pailab.co         11 sess  5h  17% to 5:20PM        7d  28% to Tue 11PM
+  work@acme.com         2 sess  5h 100% FULL to 6:02PM   7d  91% to Fri 9AM
 
   1  admin                   shell
-  2  article                 draft           12%    $4.10  let's draft §3 now
-▸ 3  copyclaw                NEEDS YOU       61%   $22.65  Do you want to make this edit to auth.ts?
-  4  dotfiles                working         40%   $40.90  Cooking…
-  5  graspen-ci              idle        5a  14%   $41.61  Fix CI failure for course translation
-  6  graspen-course-ai       idle            35%   $39.75  Check AI-at-work course generation status
+  2  article                 draft           12%    $4.10  os        let's draft §3 now
+▸ 3  copyclaw                NEEDS YOU       61%   $22.65  work      Do you want to make this edit to auth.ts?
+  4  dotfiles                working         40%   $40.90  os        Cooking…
+  5  graspen-ci              idle        5a  14%   $41.61  os        Fix CI failure for course translation
+  6  graspen-course-ai       idle            35%   $39.75  work      Check AI-at-work course generation status
   ...
   f  zz-other                other                  sleep
                                total active  $499.01  sub ~$487.01   api $12.00     extra ~$4.25
@@ -257,6 +260,10 @@ Two columns come from the status line rather than the screen: how much of the
 context window that session has used, and what it has cost. Both are blank for a
 session that has not answered yet or has no exporter installed — blank means
 unknown, which is not the same as zero.
+
+A fourth appears only when it has something to say: the account tag between the
+cost and the detail, on screens with more than one account in play — see
+[accounts and limits](#accounts-and-limits).
 
 `5a` is the third: how many subagents that session has in flight, and `5 agents`
 in the header is the fleet's. Blank at zero, so it only shows up where something
@@ -301,17 +308,106 @@ crosses over on its own: hitting the limit stops the session and tells you to ru
 because someone chose it. A session that has not answered yet counts toward
 neither.
 
-The header keeps what is account-wide, since every session reports the same pair:
+### Accounts and limits
 
-- **`5h 17% to 5:20PM`** — the rolling five-hour subscription window and when it
-  clears. This is the one that bites when several sessions run at once; it falls
-  on its own as older usage rolls out of the window.
+Between the header and the rows is one line per account the fleet is signed in
+to, carrying that account's own usage windows:
+
+```
+  os@pailab.co         11 sess  5h  17% to 5:20PM        7d  28% to Tue 11PM
+  work@acme.com         2 sess  5h 100% FULL to 6:02PM   7d  91% to Fri 9AM
+```
+
+- **`11 sess`** — how many live sessions are on that account.
+- **`5h 17% to 5:20PM`** — the rolling five-hour window and when it clears. This
+  is the one that bites when several sessions run at once; it falls on its own as
+  older usage rolls out of the window.
 - **`7d 28% to Tue 11PM`** — the weekly window. Only really moves one way until
   it resets.
-- **`5h 100% FULL`** — the window is exhausted. Utilization is clamped upstream,
-  so 100 is as high as it goes.
-- **`** You're close to your usage limit`** — a limit notice read off some
-  session's screen.
+- **`5h 100% FULL`** — the window is exhausted, drawn in red. Anything at or
+  above 100 counts: the figure is not clamped there, and readings of `101` have
+  turned up in live exports.
+- **A line with no numbers** — the account is there and has sessions on it, but
+  its only reading has been superseded (see below). Better an empty line than
+  last window's figures.
+
+The limit notice read off a session's screen — **`** You're close to your usage
+limit`** — stays in the header, since it is one session's report rather than an
+account's standing.
+
+The rows then carry a short tag saying which account each session's figures came
+from: the part of the address in front of the `@`, or the front of the whole
+address where two accounts share one. **The column only appears when there is more than one account
+to tell apart** — on the ordinary single-account screen every row would say the
+same word, so the detail keeps the space instead.
+
+Two things are deliberately kept off the account lines:
+
+- **API-billed sessions** are tagged `api` and get no line. They have no rate
+  limits at all, and putting them under whichever address the config holds would
+  count a session against a subscription it is not spending from.
+- **Sessions that have not said** — no exporter, or no answer yet — are tagged
+  blank. If *nothing* on screen names an account, the monitor falls back to the
+  single `5h`/`7d` pair in the header that it showed before any of this existed.
+
+#### What the label actually means
+
+**The account signed in when those numbers came back.** Not which account the
+session will use next — that distinction is the whole design, and getting it
+wrong is visible.
+
+Claude does not tell a status line who is signed in. The payload's keys are
+`context_window`, `cost`, `cwd`, `effort`, `exceeds_200k_tokens`, `fast_mode`,
+`model`, `output_style`, `prompt_id`, `rate_limits`, `session_id`,
+`session_name`, `thinking`, `transcript_path`, `version`, `vim` and `workspace` —
+checked against a real one, not the docs. The account is not in the transcript or
+in Claude's session registry either. The only place it is written down is
+Claude's own config, and with a single config dir that is **one global file**
+that `/login` rewrites for every session on the machine at once.
+
+So reading it at render time is wrong, and wrong in the way that looks right:
+sessions re-render for all sorts of reasons, and each one that did would pick up
+the account you had just switched to while still reporting the *previous*
+account's usage windows underneath it. One `/login` and the whole fleet relabels
+itself to an account most of it never used.
+
+`claude/statusline.sh` therefore only consults the config when the session has
+actually heard from the API since its last export — the limits, their reset times
+and the cost all arrive in the same response, so if none of them has moved there
+is no new reading to label and the previous label still describes the numbers
+being re-exported. A session that has answered since a switch relabels itself; one
+that has not keeps the account its figures belong to.
+
+Two consequences worth expecting:
+
+- **A line can name an account you have already left.** That is correct: those
+  numbers are that account's. It clears itself the moment the session answers.
+- **After a switch, nothing says which account an idle session will bill next.**
+  Globally it is the new one for everybody, and nothing observable from outside
+  the process distinguishes a session that has picked up new credentials from one
+  that has not. The monitor does not guess.
+
+Within an account the newest reading still wins, and a reading whose reset time
+has already passed is dropped rather than aged into second place — a session
+sitting idle across a rollover keeps re-exporting the old window's usage with a
+fresh timestamp on it.
+
+The address is read through a one-line cache in `~/.claude/monitor/accounts`,
+keyed off the config's own mtime, so the 120KB config is parsed on a login and a
+switch and almost never otherwise.
+
+#### Running two accounts at once
+
+`/login` switching gives you one account at a time. To keep two signed in
+simultaneously, give each its own config directory — it carries the whole account
+store, logins included:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-work claude    # /login once, then it stays
+```
+
+The monitor needs nothing configured for this: sessions started that way export
+their own address and pick up their own line.
 
 ### Spend over time
 
@@ -320,7 +416,8 @@ the cost column and that comes from the per-pane exports, which the next session
 in that pane overwrites. So `claude/statusline.sh` also keeps a ledger, in
 `~/.claude/monitor/spend`: one small file per session per day, named
 `<day>.<session id>`, holding the cents that session spent on that day and
-whether it was paying by subscription or by API key.
+whether it was paying by subscription or by API key, and which account it was on
+at the time.
 
 Each write compares the session's cumulative cost against what the file last
 saw and adds the difference. On the first write of a new day the figure to
@@ -496,8 +593,10 @@ empty box with a dim suggestion of what to ask next. The cursor settles that too
 **Claude's own events**, via `claude/monitor-hook.sh`, which every hook runs and
 which leaves a state file per pane in `~/.claude/monitor`, plus the count of
 subagents that pane has running — [counting subagents](#counting-subagents).
-`claude/statusline.sh` adds context and cost to the same place, since neither is
-on the screen at all. Both key their files by tmux server pid and pane id, which
+`claude/statusline.sh` adds context, cost, the usage windows and the account they
+were read under to the same place, since none of it is on the screen at all — and
+the account is not even in the payload Claude pipes it, so that one comes out of
+Claude's own config. Both key their files by tmux server pid and pane id, which
 is what `$TMUX_PANE` in their environment makes possible — or by session id where
 there is no pane, which is how a [parked job](#parked-jobs) is found.
 
@@ -511,7 +610,8 @@ Neither source overrules the other:
 - `shell` / `other` / `gone` — the screen, and final.
 
 A session with no exporter installed — another machine, or one started before it
-was — loses the context and cost columns and nothing else. An exported state
+was — loses the context and cost columns, contributes no account line, and
+nothing else. An exported state
 older than `MONITOR_STALE` is ignored, so a Claude killed before `SessionEnd`
 cannot leave a row stuck on `working`.
 

@@ -253,8 +253,9 @@ X_CTX=()      # and the numbers the screen does not carry
 X_COST=()
 X_COSTF=()    # the same cost, rounded for the column, so the draw does no work
 X_COST_ALL="" # every session's cost added up, for the line under the rows
-X_LIM5=""     # account-wide, so they belong in the header rather than a row
-X_LIM7=""
+X_ACCT=()     # per session: the account its export was written under
+X_LIM5=""     # the fallback pair, for sessions whose account is not known; the
+X_LIM7=""     # rest are per account, in the ACC_* table below
 X_RST5=""     # already formatted for the header; see monitor_fmt_reset
 X_RST7=""
 X_AGENTS=()   # per session: subagents in flight; see monitor_count_agents
@@ -282,6 +283,40 @@ X_COST_API=""
 X_COST_OVER=""   # spend the exporter attributed to an exhausted window
 X_NOTICE=""      # a limit notice read off some session's screen
 
+# --- accounts -----------------------------------------------------------------
+#
+# The limits used to be treated as one pair for the whole screen, on the grounds
+# that they are account-wide and every session therefore reports the same two
+# numbers. That holds for exactly as long as there is one account.
+#
+# With more than one it is wrong in a way that is worse than useless, because the
+# numbers still look right. Whichever session answered last wins the header, so a
+# fleet split across two subscriptions shows one of them and calls it the total --
+# and it changes which one behind your back, every time the other side answers.
+# The same thing happens on a single config dir: /login rewrites it in place, and
+# for a while afterwards half the fleet is still reporting the account you just
+# left. That is the case worth catching, since nothing on the screen would
+# otherwise say the reading had gone stale.
+#
+# So the readings are grouped by the account they were taken under, and each
+# account gets its own line. Parallel arrays rather than a structure: bash 3.2 has
+# no associative arrays, and there are only ever a handful of these.
+#
+# The key is the account's email address, except for two cases that have to be
+# kept out of the subscription lines. An API-billed session is keyed "api": it has
+# no rate limits at all, and grouping it under whichever address the config
+# happens to hold would put a session that is not on the subscription onto the
+# subscription's line. A session that has not said -- no exporter, or no answer
+# yet -- is keyed empty, and its readings go to the X_LIM5/X_LIM7 fallback so an
+# older setup keeps the header it had before this existed.
+ACC_KEY=()    # the account, as the status line exported it
+ACC_N=()      # live sessions signed in to it
+ACC_LIM5=(); ACC_LIM7=()
+ACC_RST5=(); ACC_RST7=()   # formatted, like X_RST5
+ACC_TS=()     # write time of the reading held above, so the newest one wins
+ACC_TAG=()    # short label for the session rows; see monitor_acc_tags
+ACC_SHOWN=0   # accounts with a line of their own, i.e. not "api" and not unknown
+
 # The notices Claude Code puts up about limits and extra usage. These are matched
 # rather than any field, because the field does not exist anywhere reachable:
 # isUsingOverage lives only inside the process, and its own renderer returns
@@ -296,9 +331,14 @@ LIMIT_NOTICES='close to your usage limit|close to your usage credit limit|out of
 # Epoch -> local clock, remembered so this costs a fork only when the window
 # actually rolls over. The header is rebuilt on every keystroke and must not
 # fork; these are computed on the refresh tick instead.
+#
+# Cached by epoch and format together rather than in a slot per window: with two
+# accounts on screen there are two of each window, all four are formatted every
+# tick, and a two-slot memo would miss on every one of them. Keyed by format as
+# well because the two windows are shown in different shapes.
 FMT_OUT=""
-R5_EPOCH=""; R5_TEXT=""
-R7_EPOCH=""; R7_TEXT=""
+FMTC_K=()
+FMTC_V=()
 
 # Whether a window's reset is still ahead of us, i.e. the reading that came with
 # it describes the window we are in. An unreadable or absent epoch counts as
@@ -323,7 +363,7 @@ monitor_fmt_reset() {
 # those before writing for exactly this reason.
 KV_STATE=""; KV_DETAIL=""; KV_TS=0
 KV_CTX=""; KV_COST=""; KV_LIM5=""; KV_LIM7=""
-KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_SESSION=""
+KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_SESSION=""; KV_ACCT=""
 monitor_read_kv() {
   local f=$1 k v
   [ -r "$f" ] || return 1
@@ -339,6 +379,7 @@ monitor_read_kv() {
       rst5)    KV_RST5=$v ;;
       rst7)    KV_RST7=$v ;;
       sub)     KV_SUB=$v ;;
+      acct)    KV_ACCT=$v ;;
       session) KV_SESSION=$v ;;
       ts)      KV_TS=$v ;;
     esac
@@ -489,19 +530,111 @@ monitor_sum_spend() {
   return 0
 }
 
-# Fills the X_* arrays for every session.
+# Where an account sits in the table, in ACC_I. Linear, because the table is a
+# handful of entries and an index over it would cost more to build than to scan.
+ACC_I=-1
+monitor_acc_find() {
+  local key=$1 i=0 n=${#ACC_KEY[@]}
+  ACC_I=-1
+  while [ "$i" -lt "$n" ]; do
+    [ "${ACC_KEY[$i]}" = "$key" ] && { ACC_I=$i; return 0; }
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# The same, adding the account if it is not there yet.
+monitor_acc_slot() {
+  monitor_acc_find "$1" && return 0
+  ACC_I=${#ACC_KEY[@]}
+  ACC_KEY+=("$1"); ACC_N+=(0)
+  ACC_LIM5+=(""); ACC_LIM7+=("")
+  ACC_RST5+=(""); ACC_RST7+=("")
+  ACC_TS+=(0); ACC_TAG+=("")
+  return 0
+}
+
+# Short labels for the session rows. The address itself is too wide to put on
+# every row -- it would take a sixth of an 80-column screen -- so the part in
+# front of the @ stands in for it, which is what tells accounts apart in every
+# case that is not deliberately adversarial.
+#
+# Where it does not, because two addresses share a local part, both fall back to
+# the front of the whole address. Two that are still the same after that read as
+# one account on the rows; the lines under the header spell them out in full, and
+# that is the place to look when the tags do not add up.
+ACC_TAGW=8
+monitor_acc_tags() {
+  local i=0 j n=${#ACC_KEY[@]} t
+  while [ "$i" -lt "$n" ]; do
+    t=${ACC_KEY[$i]%%@*}
+    ACC_TAG[$i]=${t:0:$ACC_TAGW}
+    i=$((i + 1))
+  done
+  # Compared after truncation, since that is what ends up on the screen: two
+  # addresses that first differ past the eighth character collide here just as
+  # much as two that are identical.
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    j=$((i + 1))
+    while [ "$j" -lt "$n" ]; do
+      if [ -n "${ACC_TAG[$i]}" ] && [ "${ACC_TAG[$i]}" = "${ACC_TAG[$j]}" ]; then
+        ACC_TAG[$i]=${ACC_KEY[$i]:0:$ACC_TAGW}
+        ACC_TAG[$j]=${ACC_KEY[$j]:0:$ACC_TAGW}
+      fi
+      j=$((j + 1))
+    done
+    i=$((i + 1))
+  done
+}
+
+# Which accounts get a line, and in what order: alphabetical, so a line does not
+# jump because a session on some other account came or went.
+#
+# Left out are the two keys that are not subscriptions to report on -- "api",
+# which has no limits by construction, and the unknown account, whose reading
+# goes to the header instead -- and any account with nothing live on it, which is
+# how a meta file left behind by a session that has since died stops being drawn
+# as an account you are signed in to.
+ACC_ORDER=()
+ACC_TAGGED=0
+monitor_acc_order() {
+  local i=0 n=${#ACC_KEY[@]} j k t
+  ACC_ORDER=(); ACC_SHOWN=0; ACC_TAGGED=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "${ACC_N[$i]}" -gt 0 ] && [ -n "${ACC_KEY[$i]}" ]; then
+      ACC_TAGGED=$((ACC_TAGGED + 1))
+      if [ "${ACC_KEY[$i]}" != api ]; then
+        j=${#ACC_ORDER[@]}
+        ACC_ORDER+=("$i")
+        while [ "$j" -gt 0 ]; do
+          k=$((j - 1))
+          [[ ${ACC_KEY[${ACC_ORDER[$k]}]} > ${ACC_KEY[${ACC_ORDER[$j]}]} ]] || break
+          t=${ACC_ORDER[$j]}; ACC_ORDER[$j]=${ACC_ORDER[$k]}; ACC_ORDER[$k]=$t
+          j=$k
+        done
+      fi
+    fi
+    i=$((i + 1))
+  done
+  ACC_SHOWN=${#ACC_ORDER[@]}
+}
+
+# Fills the X_* arrays for every session, and the ACC_* table behind them.
 monitor_read_exports() {
-  local i n=${#SESSIONS[@]} now base limts=0 subc=0 apic=0 overc=0 allc=0
+  local i n=${#SESSIONS[@]} now base acck subc=0 apic=0 overc=0 allc=0
   local seen_sub="" seen_api="" seen_any=""
   X_STATE=(); X_DETAIL=(); X_CTX=(); X_COST=(); X_COSTF=(); X_AGENTS=()
-  X_ASPEND=()
+  X_ASPEND=(); X_ACCT=()
+  ACC_KEY=(); ACC_N=(); ACC_LIM5=(); ACC_LIM7=(); ACC_RST5=(); ACC_RST7=()
+  ACC_TS=(); ACC_TAG=(); ACC_ORDER=(); ACC_SHOWN=0; ACC_TAGGED=0
   X_LIM5=""; X_LIM7=""; X_RST5=""; X_RST7=""
   X_COST_SUB=""; X_COST_API=""; X_COST_OVER=""; X_COST_ALL=""; X_NOTICE=""
   X_AGENT_ALL=0; X_ASPEND_ALL=0
   i=0
   while [ "$i" -lt "$n" ]; do
     X_STATE+=(""); X_DETAIL+=(""); X_CTX+=(""); X_COST+=(""); X_COSTF+=("")
-    X_AGENTS+=(0); X_ASPEND+=(0)
+    X_AGENTS+=(0); X_ASPEND+=(0); X_ACCT+=("")
     i=$((i + 1))
   done
   [ "$n" -gt 0 ] && [ -d "$MONITOR_DIR" ] || return 0
@@ -540,15 +673,28 @@ monitor_read_exports() {
     # as it stays quiet -- expiring them would blank the column on exactly the
     # sessions that have been sitting there longest.
     KV_CTX=""; KV_COST=""; KV_LIM5=""; KV_LIM7=""; KV_TS=0
-    KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_OVER=""
+    KV_RST5=""; KV_RST7=""; KV_SUB=""; KV_OVER=""; KV_ACCT=""
     if monitor_read_kv "$base.meta"; then
       X_CTX[$i]=$KV_CTX
       X_COST[$i]=$KV_COST
-      # The limits are account-wide, so every session reports the same pair --
-      # but each only rewrites its file when its own status line runs, so the
-      # files disagree by however long ago that was. Take them from the newest
-      # file rather than from whichever session happens to be read last, which
-      # is alphabetical order and could be minutes out of date.
+
+      # Which account this reading was taken under, and so which account's
+      # windows it describes. An API-billed session is keyed apart from the
+      # subscriptions whatever address the config holds, because it is not
+      # spending against any of them; see the accounts section.
+      case $KV_SUB in
+        0) acck=api ;;
+        *) acck=$KV_ACCT ;;
+      esac
+      X_ACCT[$i]=$acck
+      monitor_acc_slot "$acck"
+
+      # The limits are account-wide, so every session on one account reports the
+      # same pair -- but each only rewrites its file when its own status line
+      # runs, so the files disagree by however long ago that was. Take them from
+      # the newest file on that account rather than from whichever session
+      # happens to be read last, which is alphabetical order and could be
+      # minutes out of date.
       #
       # A fresh write timestamp is not enough to trust them, though. These
       # numbers come from the last API response that session received, so a
@@ -561,13 +707,15 @@ monitor_read_exports() {
       case $KV_TS in
         ''|*[!0-9]*) ;;
         *)
-          if [ "$KV_TS" -gt "$limts" ] &&
+          if [ "$KV_TS" -gt "${ACC_TS[$ACC_I]}" ] &&
              [ -n "$KV_LIM5$KV_LIM7" ] && [ "$KV_LIM5" != -1 ] &&
              monitor_reset_pending "$KV_RST5" "$now"; then
-            limts=$KV_TS
-            X_LIM5=$KV_LIM5
-            X_LIM7=$KV_LIM7
+            ACC_TS[$ACC_I]=$KV_TS
+            ACC_LIM5[$ACC_I]=$KV_LIM5
+            ACC_LIM7[$ACC_I]=$KV_LIM7
             monitor_reset_texts "$KV_RST5" "$KV_RST7"
+            ACC_RST5[$ACC_I]=$RST5_OUT
+            ACC_RST7[$ACC_I]=$RST7_OUT
           fi
           ;;
       esac
@@ -594,6 +742,18 @@ monitor_read_exports() {
     fi
     i=$((i + 1))
   done
+  # The header's fallback pair: the reading from sessions that did not say which
+  # account it came from -- a Claude older than the acct= key, or one whose
+  # status line has not run since this was installed. Drawn only when no account
+  # identified itself at all, so an installation without any of this keeps the
+  # header it had before; where some sessions do name an account, they get lines
+  # and this reading is dropped rather than shown as a nameless third window.
+  if monitor_acc_find ""; then
+    X_LIM5=${ACC_LIM5[$ACC_I]}
+    X_LIM7=${ACC_LIM7[$ACC_I]}
+    X_RST5=${ACC_RST5[$ACC_I]}
+    X_RST7=${ACC_RST7[$ACC_I]}
+  fi
   [ "$overc" -gt 0 ] && printf -v X_COST_OVER '%d.%02d' $((overc / 100)) $((overc % 100))
   # Formatted only if something landed there, so an absent column stays absent
   # rather than reading $0.00 -- which would look like a measurement.
@@ -603,30 +763,36 @@ monitor_read_exports() {
   return 0
 }
 
-# Sets X_RST5 and X_RST7 from a pair of epochs, reusing the last answer for as
-# long as each epoch holds -- so this forks only when a window actually rolls
-# over, not once per session per tick. The 5-hour window is shown as a clock time
-# and the weekly one as a day, since one is always today and the other rarely is.
+# One epoch, formatted, through the cache above -- so this forks only when a
+# window actually rolls over, not once per account per tick. An epoch that is not
+# one comes back empty rather than as whatever date would make of it.
+RST_OUT=""
+monitor_reset_text() {
+  local e=$1 f=$2 k i=0 n=${#FMTC_K[@]}
+  RST_OUT=""
+  case $e in ''|0|*[!0-9]*) return 0 ;; esac
+  k="$e $f"
+  while [ "$i" -lt "$n" ]; do
+    [ "${FMTC_K[$i]}" = "$k" ] && { RST_OUT=${FMTC_V[$i]}; return 0; }
+    i=$((i + 1))
+  done
+  # Two entries per account per rollover, so this grows by a handful a day on a
+  # monitor left up for one. Dropped wholesale rather than aged: the next tick
+  # refills whatever is still current, at the cost of one fork each.
+  [ "$n" -gt 32 ] && { FMTC_K=(); FMTC_V=(); }
+  monitor_fmt_reset "$e" "$f"
+  RST_OUT=$FMT_OUT
+  FMTC_K+=("$k"); FMTC_V+=("$RST_OUT")
+  return 0
+}
+
+# The pair, into RST5_OUT and RST7_OUT. The 5-hour window is shown as a clock
+# time and the weekly one as a day, since one is always today and the other
+# rarely is.
+RST5_OUT=""; RST7_OUT=""
 monitor_reset_texts() {
-  local e5=$1 e7=$2
-  case $e5 in
-    ''|0|*[!0-9]*) X_RST5="" ;;
-    *)
-      if [ "$e5" != "$R5_EPOCH" ]; then
-        monitor_fmt_reset "$e5" '%-l:%M%p'; R5_EPOCH=$e5; R5_TEXT=$FMT_OUT
-      fi
-      X_RST5=$R5_TEXT
-      ;;
-  esac
-  case $e7 in
-    ''|0|*[!0-9]*) X_RST7="" ;;
-    *)
-      if [ "$e7" != "$R7_EPOCH" ]; then
-        monitor_fmt_reset "$e7" '%a %-l%p'; R7_EPOCH=$e7; R7_TEXT=$FMT_OUT
-      fi
-      X_RST7=$R7_TEXT
-      ;;
-  esac
+  monitor_reset_text "$1" '%-l:%M%p'; RST5_OUT=$RST_OUT
+  monitor_reset_text "$2" '%a %-l%p'; RST7_OUT=$RST_OUT
 }
 
 # "1.234" -> CENTS=123. Assigns rather than prints: a $(...) per session to add up
@@ -1229,12 +1395,20 @@ term_size() { # -> "rows cols"
   esac
 }
 
-# Width of every column before the detail, which the padding and the truncation
-# both have to agree on: 2 + key 1 + 2 + name 23 + 1 + state 9 + 1 + agents 3 +
-# 1 + ctx 4 + 1 + cost 8 + 2. Kept in one place because getting it wrong by one
-# leaves the highlight bar short of the right edge, which is invisible until you
-# look for it.
+# Width of every column up to and including the cost, which the padding and the
+# truncation both have to agree on: 2 + key 1 + 2 + name 23 + 1 + state 9 + 1 +
+# agents 3 + 1 + ctx 4 + 1 + cost 8 + 2. Kept in one place because getting it
+# wrong by one leaves the highlight bar short of the right edge, which is
+# invisible until you look for it.
 MON_PREFIX=58
+
+# Where the detail actually starts, which is the same thing plus the account
+# column on the screens that have one. The two are separate because the totals
+# under the rows hang off the cost column and must not move when a second
+# account appears: the account tag sits between the cost and the detail, so
+# everything to its left stays where it was.
+MON_ACCW=0
+MON_DETAIL=$MON_PREFIX
 
 SESSIONS=()
 SEL=0          # cursor position in SESSIONS
@@ -1305,8 +1479,103 @@ monitor_total_row() {
   ROW_OUT="$row$T_EL"$'\n'
 }
 
+# One window of one account -- "  8% to 3:10pm", or "100% FULL to 6:02pm" --
+# padded to a fixed width so the two windows line up down the block, and flagged
+# when it is exhausted so the caller can color the whole cell without putting an
+# escape sequence inside a field printf is padding by bytes.
+#
+# A window at 100 is FULL, not "nearly there". Tested with -ge rather than =,
+# because the figure is not in fact clamped there: readings of 101 have been seen
+# in live exports on this machine. The number is printed as it comes, so a window
+# past its limit says so rather than being rounded back down to the cap.
+ACC_WINW=19
+ACC_WIN=""
+ACC_WIN_HOT=""
+ACC_WIN_KNOWN=""
+monitor_acc_window() {
+  local lim=$1 rst=$2 t
+  ACC_WIN=""; ACC_WIN_HOT=""; ACC_WIN_KNOWN=""
+  case $lim in
+    ''|-1|*[!0-9]*) printf -v ACC_WIN '%*s' "$ACC_WINW" ''; return 0 ;;
+  esac
+  ACC_WIN_KNOWN=1
+  printf -v t '%3s%%' "$lim"
+  if [ "$lim" -ge 100 ] 2>/dev/null; then
+    t="$t FULL"
+    ACC_WIN_HOT=1
+  fi
+  [ -n "$rst" ] && t="$t to $rst"
+  printf -v ACC_WIN '%-*s' "$ACC_WINW" "$t"
+  return 0
+}
+
+# One account's line, into ACC_ROW. The address is written out in full here --
+# this is the one place on the screen with room for it, and the tags on the rows
+# are only readable because this says what they stand for.
+#
+# Built twice, plain and colored, because the escapes make the string longer than
+# it looks and a row that overflows the terminal wraps, which shifts every line
+# under it and breaks the redraw. Under the width it is drawn in color; over it,
+# the plain one is cut to fit. Both come out of the same fields, so they cannot
+# drift apart.
+ACC_ROW=""
+monitor_acc_row() {
+  local width=$1 idx=$2 acct sess plain c5 c7 lead tail tailc
+  local w5 h5 k5 w7 h7 k7 p5=5h
+  acct=${ACC_KEY[$idx]}
+  [ ${#acct} -gt 20 ] && acct=${acct:0:20}
+  printf -v sess '%2s sess' "${ACC_N[$idx]}"
+  monitor_acc_window "${ACC_LIM5[$idx]}" "${ACC_RST5[$idx]}"
+  w5=$ACC_WIN; h5=$ACC_WIN_HOT; k5=$ACC_WIN_KNOWN
+  monitor_acc_window "${ACC_LIM7[$idx]}" "${ACC_RST7[$idx]}"
+  w7=$ACC_WIN; h7=$ACC_WIN_HOT; k7=$ACC_WIN_KNOWN
+
+  # An account whose only reading has been superseded gets its name and its
+  # session count and nothing else -- the line is still worth drawing, since it
+  # is how you know the account is there at all, but there is no number to put
+  # on it and a blank "5h" would look like one that read zero.
+  #
+  # The weekly window is last, so an unknown one is dropped outright; the 5-hour
+  # one is not, and keeps its width so the weekly stays in its column. Whichever
+  # ends the line loses its padding, which is trailing whitespace and nothing
+  # else -- the same reason the totals under the rows drop theirs.
+  [ -z "$k5" ] && p5='  '
+  if [ -n "$k7" ]; then
+    while [ -n "$w7" ]; do
+      case ${w7: -1} in ' ') w7=${w7%?} ;; *) break ;; esac
+    done
+  elif [ -n "$k5" ]; then
+    while [ -n "$w5" ]; do
+      case ${w5: -1} in ' ') w5=${w5%?} ;; *) break ;; esac
+    done
+  fi
+
+  c5=$C_DIM; c7=$C_DIM
+  [ -n "$h5" ] && c5="$C_RED$C_BOLD"
+  [ -n "$h7" ] && c7="$C_RED$C_BOLD"
+  tail=""; tailc=""
+  if [ -n "$k5" ] || [ -n "$k7" ]; then
+    tail="  $p5 $w5"
+    tailc="  $C_DIM$p5$C_RST $c5$w5$C_RST"
+    if [ -n "$k7" ]; then
+      tail="$tail  7d $w7"
+      tailc="$tailc  ${C_DIM}7d$C_RST $c7$w7$C_RST"
+    fi
+  fi
+
+  printf -v plain '  %-20s %s%s' "$acct" "$sess" "$tail"
+  if [ ${#plain} -gt "$width" ]; then
+    ACC_ROW="${plain:0:$width}$T_EL"$'\n'
+    return 0
+  fi
+  printf -v lead '  %-20s ' "$acct"
+  ACC_ROW="$lead$C_DIM$sess$C_RST$tailc$T_EL"$'\n'
+  return 0
+}
+
 ROW_STATE=()   # per session, same order as SESSIONS
 ROW_DETAIL=()
+X_ATAG=()      # and the account tag its row will carry, blank for no column
 N_CLAUDE=0
 N_WORK=0
 N_NEED=0
@@ -1344,13 +1613,35 @@ monitor_collect() {
       ask)   N_NEED=$((N_NEED + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       busy)  N_WORK=$((N_WORK + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       draft|idle) N_CLAUDE=$((N_CLAUDE + 1)) ;;
-      # No Claude in this pane, so anything left in it -- markers or spend -- is
-      # from one that has since gone: killed before SessionEnd, or the whole tmux
-      # server with it.
-      *) X_AGENTS[$i]=0; X_ASPEND[$i]=0 ;;
+      # No Claude in this pane, so anything left in it -- markers, spend, or the
+      # account it was signed in to -- is from one that has since gone: killed
+      # before SessionEnd, or the whole tmux server with it.
+      *) X_AGENTS[$i]=0; X_ASPEND[$i]=0; X_ACCT[$i]="" ;;
     esac
+    # Counted here rather than where the file was read, because only now is it
+    # known whether there is still a Claude in the pane. An account whose every
+    # session has gone has no line, however recent the export it left behind.
+    [ -n "${X_ACCT[$i]}" ] && monitor_acc_find "${X_ACCT[$i]}" &&
+      ACC_N[$ACC_I]=$((ACC_N[$ACC_I] + 1))
     X_AGENT_ALL=$((X_AGENT_ALL + ${X_AGENTS[$i]:-0}))
     X_ASPEND_ALL=$((X_ASPEND_ALL + ${X_ASPEND[$i]:-0}))
+    i=$((i + 1))
+  done
+
+  # The account column earns its place only once there is more than one account
+  # to tell apart. On the ordinary single-account screen every row would carry
+  # the same word, so there is no column at all and the detail keeps the space.
+  monitor_acc_order
+  monitor_acc_tags
+  X_ATAG=()
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "$ACC_TAGGED" -ge 2 ] && [ -n "${X_ACCT[$i]}" ] &&
+       monitor_acc_find "${X_ACCT[$i]}"; then
+      X_ATAG+=("${ACC_TAG[$ACC_I]}")
+    else
+      X_ATAG+=("")
+    fi
     i=$((i + 1))
   done
 }
@@ -1359,13 +1650,17 @@ monitor_collect() {
 # row with printf -v, so a keystroke that only moves the cursor costs a redraw and
 # nothing else.
 monitor_draw() {
-  local h w i n state detail maxd pad row out="" hdr name ctx cost mark agents
+  local h w i n state detail maxd pad row out="" acc="" hdr name ctx cost mark agents tagf tail
   read -r h w <<<"$(term_size)"
 
   # What every column before the detail takes: two spaces, the key, two spaces,
   # the name at 23, a space, the state at 9, a space, the agent count at 3, a
-  # space, the context at 4, a space, the cost at 8, and two more spaces.
-  maxd=$((w - MON_PREFIX))
+  # space, the context at 4, a space, the cost at 8, two more spaces -- and then
+  # the account tag and two more again, on the screens that show one.
+  MON_ACCW=0
+  [ "$ACC_TAGGED" -ge 2 ] && MON_ACCW=$((ACC_TAGW + 2))
+  MON_DETAIL=$((MON_PREFIX + MON_ACCW))
+  maxd=$((w - MON_DETAIL))
   [ "$maxd" -lt 12 ] && maxd=12
 
   n=${#SESSIONS[@]}
@@ -1395,6 +1690,22 @@ monitor_draw() {
     agents='   '
     [ "${X_AGENTS[$i]:-0}" -gt 0 ] 2>/dev/null &&
       printf -v agents '%3s' "${X_AGENTS[$i]}a"
+    # The account tag, where there is a column for one. Padded here and glued to
+    # the front of the detail rather than given a field of its own: it is dim
+    # like the detail is, so the two share one run of color, and the escapes stay
+    # out of anything printf is padding. Blank for a pane with no Claude in it,
+    # which leaves the column empty rather than naming an account that has gone.
+    tagf=""
+    [ "$MON_ACCW" -gt 0 ] &&
+      printf -v tagf '%-*s  ' "$ACC_TAGW" "${X_ATAG[$i]}"
+    # Which leaves the tag's padding hanging off the end of a row with no detail
+    # on it, so the ordinary row drops it. The cursor's row keeps it: there the
+    # padding runs to the right edge anyway, and it is measured from the full
+    # width of the column.
+    tail="$tagf$detail"
+    while [ -n "$tail" ]; do
+      case ${tail: -1} in ' ') tail=${tail%?} ;; *) break ;; esac
+    done
     monitor_state_style "$state"
     if [ "$i" = "$SEL" ]; then
       # The cursor's row goes in reverse video, with no inner resets -- one would
@@ -1403,12 +1714,12 @@ monitor_draw() {
       # for us). The mark is kept as well, so the cursor is still visible with
       # colors off; it and the padding live outside every %-*s, so a multibyte
       # glyph cannot skew them.
-      pad=$((w - MON_PREFIX - ${#detail}))
+      pad=$((w - MON_DETAIL - ${#detail}))
       [ "$pad" -lt 0 ] && pad=0
-      printf -v row '%s▸ %s  %-23s %s %s %s %s  %s%*s%s' \
+      printf -v row '%s▸ %s  %-23s %s %s %s %s  %s%s%*s%s' \
         "$C_REV" "${KEYS:$i:1}" \
         "$name" "$STATE_TEXT" "$agents" "$ctx" "$cost" \
-        "$detail" "$pad" '' "$C_RST"
+        "$tagf" "$detail" "$pad" '' "$C_RST"
     else
       # The agent count is the one column here that is not dim. A fleet running
       # under a session is worth seeing from across the room, and it is the same
@@ -1419,7 +1730,7 @@ monitor_draw() {
         "$STATE_COLOR" "$STATE_TEXT" "$C_RST" \
         "$C_CYA" "$agents" "$C_RST" \
         "$C_DIM" "$ctx" "$cost" "$C_RST" \
-        "$C_DIM" "$detail" "$C_RST"
+        "$C_DIM" "$tail" "$C_RST"
     fi
     # T_EL per row here rather than a sed over the whole block: that was one more
     # fork on the path between a keypress and the screen.
@@ -1460,6 +1771,19 @@ monitor_draw() {
     done
   fi
 
+  # The account block, between the header and the rows: one line per account the
+  # fleet is signed in to, with that account's own windows on it. Not in the
+  # header bar, because there can be more than one of them and the bar is one
+  # line; not in a column, because the numbers belong to the account rather than
+  # to any session, and a column would repeat each one down every row it owns.
+  i=0
+  while [ "$i" -lt "$ACC_SHOWN" ]; do
+    monitor_acc_row "$w" "${ACC_ORDER[$i]}"
+    acc+="$ACC_ROW"
+    i=$((i + 1))
+  done
+  [ -n "$acc" ] && acc+="$T_EL"$'\n'
+
   if [ "$n" -eq 0 ]; then
     hdr=" MONITOR  no sessions found"
     out="  nothing to monitor yet$T_EL"$'\n'
@@ -1486,21 +1810,27 @@ monitor_draw() {
         $((X_ASPEND_ALL / 100)) $((X_ASPEND_ALL % 100))
     fi
     hdr="$hdr  refresh ${INTERVAL}s"
-    # Limits and spend go up here, not in a row: the limits are account-wide, so
-    # every session reports the same pair and a per-row copy would say nothing.
+    # The limits go in the block under the header, not up here -- there can be
+    # more than one account's worth of them and this is one line. What is left
+    # here is the fallback: a fleet where nothing named an account, which is what
+    # a Claude older than the acct= export looks like, keeps the pair it always
+    # had in the place it always had it.
+    #
     # Kept to ASCII -- printf pads this bar by bytes, so a multibyte glyph would
     # leave the reverse video short of the right edge.
     # A window reading 100 is FULL, not "nearly there": the utilization behind it
     # is clamped, so it cannot climb past that to say how far past it went.
-    if [ -n "$X_LIM5" ]; then
-      hdr="$hdr  5h ${X_LIM5}%"
-      [ "$X_LIM5" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
-      [ -n "$X_RST5" ] && hdr="$hdr to $X_RST5"
-    fi
-    if [ -n "$X_LIM7" ]; then
-      hdr="$hdr  7d ${X_LIM7}%"
-      [ "$X_LIM7" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
-      [ -n "$X_RST7" ] && hdr="$hdr to $X_RST7"
+    if [ "$ACC_SHOWN" -eq 0 ]; then
+      if [ -n "$X_LIM5" ]; then
+        hdr="$hdr  5h ${X_LIM5}%"
+        [ "$X_LIM5" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
+        [ -n "$X_RST5" ] && hdr="$hdr to $X_RST5"
+      fi
+      if [ -n "$X_LIM7" ]; then
+        hdr="$hdr  7d ${X_LIM7}%"
+        [ "$X_LIM7" -ge 100 ] 2>/dev/null && hdr="$hdr FULL"
+        [ -n "$X_RST7" ] && hdr="$hdr to $X_RST7"
+      fi
     fi
     # Spend is not up here any more; it is on the total line under the rows,
     # beneath the per-session column it adds up.
@@ -1511,6 +1841,7 @@ monitor_draw() {
   # tick flickers.
   { printf '%s%s%-*s%s%s\n' "$T_HOME" "${C_REV}${C_BOLD}" "$w" "${hdr:0:$w}" "$C_RST" "$T_EL"
     printf '%s\n' "$T_EL"
+    printf '%s' "$acc"
     printf '%s' "$out"
     printf '%s\n' "$T_EL"
     printf '%s  %sj/k%s move   %senter%s jump   %s1-9/a-z%s jump directly   %sr%s refresh   %sq%s quit%s%s\n' \

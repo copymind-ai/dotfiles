@@ -74,6 +74,131 @@ case $session in
   ''|*[!A-Za-z0-9_-]*) session="" ;;
 esac
 
+# --- where this session's export lives ----------------------------------------
+#
+# Worked out up here rather than at the export itself, because the account below
+# has to compare this render against the last one and that is where the last one
+# is written down.
+#
+# Keyed by tmux server pid and pane id together, where there is a pane. Pane
+# numbering restarts with a new tmux server, so the pid is what stops a leftover
+# file from a dead server being read as this pane's state.
+#
+# Where there is not, the session id does instead. A session with no pane is
+# usually a parked job -- `claude` hands long work to a background session under
+# its daemon, which does not pass $TMUX_PANE on -- and that session is the one
+# actually spending the money the monitor wants to show. It is reached by
+# following the pane's parkedJobId; see tmux/monitor.sh and claude/monitor-hook.sh,
+# which keys its half the same way.
+dir=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
+key=""
+if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then
+  IFS=, read -r _sock _spid _sid <<<"$TMUX"
+  key="${_spid:-0}-${TMUX_PANE#%}"
+else
+  # Checked above, so this is either a plain id or empty -- and empty means no
+  # pane and no id to stand in for one, which is nothing we can file.
+  [ -n "$session" ] && key="sess-$session"
+fi
+
+# What this session exported last time. Read once, for both the account below and
+# the overage arithmetic further down.
+p_cost=0 p_lim5=-1 p_lim7=-1 p_rst5=0 p_rst7=0 p_over=0 p_acct="" p_had=""
+if [ -n "$key" ] && [ -r "$dir/$key.meta" ]; then
+  p_had=1
+  while IFS='=' read -r _k _v; do
+    case $_k in
+      cost) p_cost=$_v ;;
+      lim5) p_lim5=$_v ;;
+      lim7) p_lim7=$_v ;;
+      rst5) p_rst5=$_v ;;
+      rst7) p_rst7=$_v ;;
+      over) p_over=$_v ;;
+      acct) p_acct=$_v ;;
+    esac
+  done < "$dir/$key.meta"
+fi
+
+# --- which account this reading was taken under -------------------------------
+#
+# Not in the payload. Claude pipes the model, the cost, the context, the limits
+# and the session id, and says nothing at all about who is signed in -- confirmed
+# against a real payload, whose keys are exactly context_window, cost, cwd,
+# effort, exceeds_200k_tokens, fast_mode, model, output_style, prompt_id,
+# rate_limits, session_id, session_name, thinking, transcript_path, version, vim
+# and workspace. Nor is it in the transcript or in Claude's session registry. The
+# only place it is written down is Claude's own config.
+#
+# Which is a single global file, and that is the whole difficulty. `/login`
+# rewrites it in place for every session on the machine at once, so reading it on
+# every render attributes the account you just switched to to sessions that never
+# switched -- they re-render for all sorts of reasons, pick up the new address,
+# and go on reporting the previous account's usage windows underneath it. That is
+# not a smaller version of the right answer; it is the wrong session's label on a
+# real number.
+#
+# So the config is only consulted when this session has actually heard from the
+# API since the last export. The limits, their reset times and the cost all come
+# from the same response, so if none of them has moved there is no new reading to
+# label and the previous label still describes the numbers being re-exported. The
+# stamp therefore means one precise thing: the account that was signed in when
+# these numbers came back. A session that has answered since a switch relabels
+# itself; one that has not keeps the account its figures actually belong to.
+#
+# What it deliberately does not claim is which account a session will use next.
+# After a global switch that is the new one for everybody, whatever their last
+# reading says -- and nothing observable from out here distinguishes a session
+# that has quietly picked up new credentials from one that has not.
+acct=$p_acct
+if [ -z "$p_had" ] || [ -z "$p_acct" ] ||
+   [ "$lim5" != "$p_lim5" ] || [ "$lim7" != "$p_lim7" ] ||
+   [ "$rst5" != "$p_rst5" ] || [ "$rst7" != "$p_rst7" ] ||
+   [ "$cost" != "$p_cost" ]; then
+  # A fresh reading, so ask who it belongs to.
+  #
+  # Through a one-line cache rather than by parsing the config: it is a 120KB
+  # document and this runs on every assistant message. bash's own -nt says
+  # whether the cache still matches without forking anything, and the config is
+  # rewritten rarely enough that the jq below runs on a login, on a switch, and
+  # almost never otherwise. A config rewritten in the same second as the cache is
+  # missed -- -nt compares whole seconds -- and is picked up on the next write.
+  #
+  # One path, not a search: a config dir carries its whole account store, logins
+  # included -- `CLAUDE_CONFIG_DIR=... claude config ls` in an empty directory
+  # says "Not logged in" however signed in the home one is -- so falling back to
+  # the home config when a config dir has no .claude.json yet would name an
+  # account this session is certainly not using.
+  acct=""
+  conf=${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json
+  [ -r "$conf" ] || conf=""
+  if [ -n "$conf" ]; then
+    adir=$dir/accounts
+    # The config's own path is the cache key, so two config dirs cannot land on
+    # one file. Slashes are the only character in a path that cannot go in a
+    # filename.
+    acf="$adir/${conf//\//_}"
+    if [ -r "$acf" ] && [ ! "$conf" -nt "$acf" ]; then
+      while IFS='=' read -r _k _v; do
+        [ "$_k" = acct ] && acct=$_v
+      done < "$acf"
+    elif mkdir -p "$adir" 2>/dev/null; then
+      acct=$(jq -r '.oauthAccount.emailAddress // ""' "$conf" 2>/dev/null) || acct=""
+      # Anything that is not a plain address is dropped rather than written into
+      # a key=value file the monitor reads back -- and an API-key login has no
+      # account here at all, which is the empty case rather than an error.
+      case $acct in
+        ''|null|*[!A-Za-z0-9@._+-]*) acct="" ;;
+      esac
+      atmp="$adir/.tmp.$$"
+      if printf 'acct=%s\n' "$acct" > "$atmp" 2>/dev/null; then
+        mv -f "$atmp" "$acf" 2>/dev/null || rm -f "$atmp" 2>/dev/null
+      else
+        rm -f "$atmp" 2>/dev/null
+      fi
+    fi
+  fi
+fi
+
 # "1.234" -> CENTS=123, in integer arithmetic because bash has no floats.
 CENTS=0
 to_cents() {
@@ -157,12 +282,14 @@ if [ -n "$session" ] && [ -n "$day" ] && [ "$day" != null ]; then
     [ "$CENTS" -gt "$l_last" ] && l_spent=$((l_spent + CENTS - l_last))
 
     # Temp file and rename, like the export: the monitor reads these on a timer
-    # and a half-written one would total as a half-empty one. "sub" rides along
-    # unused by the monitor's own columns, so a later split of the day's spend
-    # into subscription and API does not need a new ledger format.
+    # and a half-written one would total as a half-empty one. "sub" and "acct"
+    # ride along unused by the monitor's own columns, so a later split of the
+    # day's spend -- by how it was paid for, or by which account paid -- does not
+    # need a new ledger format. The account is the one as of this write, which is
+    # the right one for the difference this write records.
     ltmp="$ldir/.$day.$session.$$"
-    if printf 'spent=%s\nlast=%s\nsub=%s\nts=%s\n' \
-         "$l_spent" "$CENTS" "$sub" "$now" > "$ltmp" 2>/dev/null
+    if printf 'spent=%s\nlast=%s\nsub=%s\nacct=%s\nts=%s\n' \
+         "$l_spent" "$CENTS" "$sub" "$acct" "$now" > "$ltmp" 2>/dev/null
     then
       mv -f "$ltmp" "$ldir/$day.$session" 2>/dev/null || rm -f "$ltmp" 2>/dev/null
     else
@@ -172,26 +299,8 @@ if [ -n "$session" ] && [ -n "$day" ] && [ "$day" != null ]; then
 fi
 
 # --- export -----------------------------------------------------------------
-# Keyed by tmux server pid and pane id together, where there is a pane. Pane
-# numbering restarts with a new tmux server, so the pid is what stops a leftover
-# file from a dead server being read as this pane's state.
-#
-# Where there is not, the session id does instead. A session with no pane is
-# usually a parked job -- `claude` hands long work to a background session under
-# its daemon, which does not pass $TMUX_PANE on -- and that session is the one
-# actually spending the money the monitor wants to show. It is reached by
-# following the pane's parkedJobId; see tmux/monitor.sh and claude/monitor-hook.sh,
-# which keys its half the same way.
-dir=${CLAUDE_MONITOR_DIR:-$HOME/.claude/monitor}
-key=""
-if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then
-  IFS=, read -r _sock _spid _sid <<<"$TMUX"
-  key="${_spid:-0}-${TMUX_PANE#%}"
-else
-  # Checked above, so this is either a plain id or empty -- and empty means no
-  # pane and no id to stand in for one, which is nothing we can file.
-  [ -n "$session" ] && key="sess-$session"
-fi
+# Into the file worked out at the top, alongside the previous reading this run
+# has already compared itself against.
 if [ -n "$key" ]; then
   if mkdir -p "$dir" 2>/dev/null; then
 
@@ -207,8 +316,9 @@ if [ -n "$key" ]; then
     #
     # Each run compares this session's cost against what it exported last time
     # and files the difference under whether a window was exhausted when it was
-    # earned. util is clamped to 100 upstream, so "exhausted" is exactly 100 and
-    # cannot be read off a higher number.
+    # earned. Compared with -ge rather than =: a window has been seen to report
+    # above 100 on this machine, so "exhausted" cannot be read off the exact
+    # number.
     #
     # Worth knowing before trusting the figure: once extra usage is enabled the
     # API can report the weekly window as seven_day_overage_included, i.e. with
@@ -218,17 +328,6 @@ if [ -n "$key" ]; then
     # percentage turns out to behave differently.
     over_at=${CLAUDE_OVERAGE_AT:-100}
     over=0
-    p_cost=0 p_lim5=-1 p_lim7=-1 p_over=0
-    if [ -r "$dir/$key.meta" ]; then
-      while IFS='=' read -r _k _v; do
-        case $_k in
-          cost) p_cost=$_v ;;
-          lim5) p_lim5=$_v ;;
-          lim7) p_lim7=$_v ;;
-          over) p_over=$_v ;;
-        esac
-      done < "$dir/$key.meta"
-    fi
     to_cents "$p_over"; over_c=$CENTS
     to_cents "$p_cost"; prev_c=$CENTS
     to_cents "$cost";   now_c=$CENTS
@@ -250,8 +349,8 @@ if [ -n "$key" ]; then
     tmp="$dir/.$key.meta.$$"
     # Written to a temp file and moved into place: the monitor reads these on a
     # timer and a half-written file would parse as a half-empty one.
-    if printf 'ctx=%s\ncost=%s\nover=%s\nlim5=%s\nlim7=%s\nrst5=%s\nrst7=%s\nsub=%s\nmodel=%s\nsession=%s\nts=%s\n' \
-         "$ctx" "$cost" "$over" "$lim5" "$lim7" "$rst5" "$rst7" "$sub" \
+    if printf 'ctx=%s\ncost=%s\nover=%s\nlim5=%s\nlim7=%s\nrst5=%s\nrst7=%s\nsub=%s\nacct=%s\nmodel=%s\nsession=%s\nts=%s\n' \
+         "$ctx" "$cost" "$over" "$lim5" "$lim7" "$rst5" "$rst7" "$sub" "$acct" \
          "$model" "$session" "$now" > "$tmp" 2>/dev/null
     then
       mv -f "$tmp" "$dir/$key.meta" 2>/dev/null || rm -f "$tmp" 2>/dev/null
