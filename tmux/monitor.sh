@@ -259,18 +259,10 @@ X_LIM7=""     # rest are per account, in the ACC_* table below
 X_RST5=""     # already formatted for the header; see monitor_fmt_reset
 X_RST7=""
 X_AGENTS=()   # per session: subagents in flight; see monitor_count_agents
-X_AGENT_ALL=0 # and the fleet's, which belongs in the header rather than a row
-X_ASPEND=()   # per session: cents its subagents have spent; monitor_sum_spend
-X_ASPEND_ALL=0
-# The two are not the same quantity and are deliberately not shown in the same
-# column. The count is what is in flight now and falls back to zero; the spend is
-# cumulative over the session and does not, so a session with nothing running can
-# still have a figure. Both are the fleet's business rather than a row's, which
-# is why they end up side by side in the header and nowhere else.
-#
-# This spend is a breakout of the cost column above, not an addition to it: every
-# subagent's tokens are already inside its session's total_cost_usd. Adding the
-# two together would count the agents twice.
+# A row's number and nothing more. The fleet-wide total used to ride in the
+# header next to the cents its finished agents had accounted for, and neither
+# said anything worth the width: the count is a sum over a column already on
+# screen, and the spend was a breakout of a cost the rows were already showing.
 # Spend is split by how the session is paying, because on a subscription the two
 # mean completely different things. A subscription session's cost is notional --
 # what those tokens would have cost at API rates -- and nothing is billed for it;
@@ -509,27 +501,6 @@ monitor_count_agents() {
   done
 }
 
-# What those agents cost: one line of cents per finished agent, appended by
-# monitor-hook.sh as each one stops. Summed here rather than kept as a total on
-# the writing side, because several agents stop at once and only the append is
-# safe between them -- see the subagent spend section of the hook.
-#
-# Read by bash, so it costs no forks: a line is a handful of bytes and even a
-# session that has run hundreds of agents is a couple of kilobytes. A line that
-# is not a plain number is skipped rather than trusted; a half-written one cannot
-# occur, but a leftover from something else could.
-ASPEND_C=0
-monitor_sum_spend() {
-  local line
-  ASPEND_C=0
-  [ -r "$1" ] || return 0
-  while read -r line; do
-    case $line in ''|*[!0-9]*) continue ;; esac
-    ASPEND_C=$((ASPEND_C + line))
-  done < "$1"
-  return 0
-}
-
 # Where an account sits in the table, in ACC_I. Linear, because the table is a
 # handful of entries and an index over it would cost more to build than to scan.
 ACC_I=-1
@@ -625,16 +596,15 @@ monitor_read_exports() {
   local i n=${#SESSIONS[@]} now base acck subc=0 apic=0 overc=0 allc=0
   local seen_sub="" seen_api="" seen_any=""
   X_STATE=(); X_DETAIL=(); X_CTX=(); X_COST=(); X_COSTF=(); X_AGENTS=()
-  X_ASPEND=(); X_ACCT=()
+  X_ACCT=()
   ACC_KEY=(); ACC_N=(); ACC_LIM5=(); ACC_LIM7=(); ACC_RST5=(); ACC_RST7=()
   ACC_TS=(); ACC_TAG=(); ACC_ORDER=(); ACC_SHOWN=0; ACC_TAGGED=0
   X_LIM5=""; X_LIM7=""; X_RST5=""; X_RST7=""
   X_COST_SUB=""; X_COST_API=""; X_COST_OVER=""; X_COST_ALL=""; X_NOTICE=""
-  X_AGENT_ALL=0; X_ASPEND_ALL=0
   i=0
   while [ "$i" -lt "$n" ]; do
     X_STATE+=(""); X_DETAIL+=(""); X_CTX+=(""); X_COST+=(""); X_COSTF+=("")
-    X_AGENTS+=(0); X_ASPEND+=(0); X_ACCT+=("")
+    X_AGENTS+=(0); X_ACCT+=("")
     i=$((i + 1))
   done
   [ "$n" -gt 0 ] && [ -d "$MONITOR_DIR" ] || return 0
@@ -658,8 +628,6 @@ monitor_read_exports() {
 
     monitor_count_agents "$base.agents"
     X_AGENTS[$i]=$AGENT_N
-    monitor_sum_spend "$base.aspend"
-    X_ASPEND[$i]=$ASPEND_C
 
     KV_STATE=""; KV_DETAIL=""; KV_TS=0
     if monitor_read_kv "$base.state" &&
@@ -1613,18 +1581,16 @@ monitor_collect() {
       ask)   N_NEED=$((N_NEED + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       busy)  N_WORK=$((N_WORK + 1)); N_CLAUDE=$((N_CLAUDE + 1)) ;;
       draft|idle) N_CLAUDE=$((N_CLAUDE + 1)) ;;
-      # No Claude in this pane, so anything left in it -- markers, spend, or the
-      # account it was signed in to -- is from one that has since gone: killed
-      # before SessionEnd, or the whole tmux server with it.
-      *) X_AGENTS[$i]=0; X_ASPEND[$i]=0; X_ACCT[$i]="" ;;
+      # No Claude in this pane, so anything left in it -- markers, or the account
+      # it was signed in to -- is from one that has since gone: killed before
+      # SessionEnd, or the whole tmux server with it.
+      *) X_AGENTS[$i]=0; X_ACCT[$i]="" ;;
     esac
     # Counted here rather than where the file was read, because only now is it
     # known whether there is still a Claude in the pane. An account whose every
     # session has gone has no line, however recent the export it left behind.
     [ -n "${X_ACCT[$i]}" ] && monitor_acc_find "${X_ACCT[$i]}" &&
       ACC_N[$ACC_I]=$((ACC_N[$ACC_I] + 1))
-    X_AGENT_ALL=$((X_AGENT_ALL + ${X_AGENTS[$i]:-0}))
-    X_ASPEND_ALL=$((X_ASPEND_ALL + ${X_ASPEND[$i]:-0}))
     i=$((i + 1))
   done
 
@@ -1790,25 +1756,6 @@ monitor_draw() {
   else
     printf -v hdr ' MONITOR  %d sessions  %d claude  %d working  %d need you' \
       "$n" "$N_CLAUDE" "$N_WORK" "$N_NEED"
-    # Only when there are any. Unlike the counts before it, this one is about
-    # work the fleet is doing rather than about the sessions themselves, and a
-    # standing "0 agents" would be a word about nothing on most machines.
-    #
-    # The money the agents have accounted for rides next to the count when there
-    # is one, and stands on its own when there is not -- a fleet that finished an
-    # hour ago has spent something and has nothing in flight, and that is exactly
-    # when the figure is worth reading. Worded on its own so it cannot be taken
-    # for another window's total: it is a share of the costs below, not a sum to
-    # add to them.
-    if [ "$X_AGENT_ALL" -gt 0 ] 2>/dev/null; then
-      hdr="$hdr  $X_AGENT_ALL agents"
-      [ "$X_ASPEND_ALL" -gt 0 ] 2>/dev/null &&
-        printf -v hdr '%s $%d.%02d' "$hdr" \
-          $((X_ASPEND_ALL / 100)) $((X_ASPEND_ALL % 100))
-    elif [ "$X_ASPEND_ALL" -gt 0 ] 2>/dev/null; then
-      printf -v hdr '%s  $%d.%02d in agents' "$hdr" \
-        $((X_ASPEND_ALL / 100)) $((X_ASPEND_ALL % 100))
-    fi
     hdr="$hdr  refresh ${INTERVAL}s"
     # The limits go in the block under the header, not up here -- there can be
     # more than one account's worth of them and this is one line. What is left

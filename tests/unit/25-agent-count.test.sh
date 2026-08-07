@@ -126,7 +126,7 @@ source "$MONITOR"
 start b1; start b2; start b3
 mkdir -p "$ROOT/4242-9.agents"; : > "$ROOT/4242-9.agents/c1"
 
-header "the count is read per pane, and totalled for the header"
+header "the count is read per pane"
 SERVER_PID=4242
 SESSIONS=(alpha graspen-ci zulu)
 P_PANE=(%1 %7 %9)
@@ -136,17 +136,18 @@ assert_eq "a session with no markers" "0" "${X_AGENTS[0]}"
 assert_eq "the pane the agents are in" "3" "${X_AGENTS[1]}"
 assert_eq "another pane, its own count" "1" "${X_AGENTS[2]}"
 
-header "the row shows the count and the header the fleet's"
+header "the row shows the count"
 term_size() { printf '20 120'; }
 ROW_STATE=(busy idle shell); ROW_DETAIL=("Cooking…" "Fix the CI failure" "")
 X_CTX=(40 14 ""); X_COSTF=('$1.00' '$41.61' '')
 N_CLAUDE=2; N_WORK=1; N_NEED=0
 X_AGENTS[2]=0      # a shell, so its markers are a dead session's leftovers
-X_AGENT_ALL=3
 DRAWN="$(monitor_draw | tr -d '\r' | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
 assert_contains "the count sits by the state" 'idle  *3a  *14%' "$DRAWN"
-assert_contains "the fleet total is in the header" '0 need you  3 agents' "$DRAWN"
 assert_not_contains "a session with none says nothing" '0a' "$DRAWN"
+# The fleet's total used to follow the counts in the header bar; the row column
+# is the only place the number is now.
+assert_not_contains "and the header does not repeat it" 'need you  3 agents' "$DRAWN"
 
 header "the columns still line up under each other"
 # The agent column is three wide whether or not it has anything in it, so ctx

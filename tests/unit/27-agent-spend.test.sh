@@ -6,7 +6,6 @@ echo ""
 printf "${BOLD}Unit: subagent spend${RESET}\n"
 
 HOOK="$DOTFILES_DIR/claude/monitor-hook.sh"
-MONITOR="$DOTFILES_DIR/tmux/monitor.sh"
 
 # As in the count test: a monitor directory of its own, and a tmux that does not
 # exist -- the hook reads $TMUX only for the server pid it keys its files by.
@@ -105,52 +104,7 @@ hook "{\"hook_event_name\":\"SubagentStop\",\"agent_id\":\"a1\",\"background_tas
 hook '{"hook_event_name":"SessionStart","source":"startup"}'
 assert "and a new session starts from nothing" [ ! -e "$SPEND" ]
 
-# ── what the monitor makes of it ─────────────────────────────────────
-
-# Sourced for its functions; the dispatch at the bottom is guarded, so nothing
-# runs and no terminal is needed.
-# shellcheck disable=SC1090
-source "$MONITOR"
-
-printf '250\n1000\n' > "$SPEND"
-printf '75\n' > "$ROOT/4242-9.aspend"
-
-header "the spend is read per pane and totalled for the header"
-SERVER_PID=4242
-SESSIONS=(alpha graspen-ci zulu)
-P_PANE=(%1 %7 %9)
-monitor_clock
-monitor_read_exports
-assert_eq "a session with no agents" "0" "${X_ASPEND[0]}"
-assert_eq "the pane the agents ran in" "1250" "${X_ASPEND[1]}"
-assert_eq "another pane, its own figure" "75" "${X_ASPEND[2]}"
-
-header "a line that is not a number is skipped rather than trusted"
-printf '250\nnot-cents\n1000\n' > "$SPEND"
-monitor_sum_spend "$SPEND"
-assert_eq "the two real ones" "1250" "$ASPEND_C"
-
-header "the figure rides beside the agent count in the header"
-term_size() { printf '20 120'; }
-ROW_STATE=(busy idle shell); ROW_DETAIL=("Cooking…" "Fix the CI failure" "")
-X_CTX=(40 14 ""); X_COSTF=('$1.00' '$41.61' '')
-N_CLAUDE=2; N_WORK=1; N_NEED=0
-X_AGENTS=(0 3 0); X_AGENT_ALL=3
-X_ASPEND=(0 1250 0); X_ASPEND_ALL=1250
-DRAWN="$(monitor_draw | tr -d '\r' | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
-assert_contains "count then money" '3 agents \$12.50' "$DRAWN"
-
-header "and stands on its own once the fleet has finished"
-# The count falls back to zero when nothing is in flight; the spend does not,
-# and this is exactly when it is worth reading -- so it has to say what it is.
-X_AGENTS=(0 0 0); X_AGENT_ALL=0
-DRAWN="$(monitor_draw | tr -d '\r' | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
-assert_contains "worded so it cannot read as a window total" '\$12.50 in agents' "$DRAWN"
-assert_not_contains "and no count claiming agents are still up" '0 agents' "$DRAWN"
-
-header "a fleet that has spent nothing says nothing"
-X_ASPEND=(0 0 0); X_ASPEND_ALL=0
-DRAWN="$(monitor_draw | tr -d '\r' | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
-assert_not_contains "no standing zero in the header" 'in agents' "$DRAWN"
+# The monitor's half of this file went with the header figure it fed: nothing
+# reads $key.aspend now. What is left is the hook's side, which still writes it.
 
 print_results

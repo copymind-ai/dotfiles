@@ -213,7 +213,7 @@ Notes:
 its Claude window is doing right now.
 
 ```
- MONITOR  15 sessions  11 claude  1 working  1 need you  5 agents  refresh 2s
+ MONITOR  15 sessions  11 claude  1 working  1 need you  refresh 2s
 
   os@pailab.co         11 sess  5h  17% to 5:20PM        7d  28% to Tue 11PM
   work@acme.com         2 sess  5h 100% FULL to 6:02PM   7d  91% to Fri 9AM
@@ -265,12 +265,12 @@ A fourth appears only when it has something to say: the account tag between the
 cost and the detail, on screens with more than one account in play — see
 [accounts and limits](#accounts-and-limits).
 
-`5a` is the third: how many subagents that session has in flight, and `5 agents`
-in the header is the fleet's. Blank at zero, so it only shows up where something
-is actually running — see [counting subagents](#counting-subagents). It is the one
-number here that says nothing about the state beside it: a session that has handed
-five background agents their work and gone quiet reads `idle 5a`, and that is
-right. It will answer you now; its fleet is still busy.
+`5a` is the third: how many subagents that session has in flight. Blank at zero,
+so it only shows up where something is actually running — see [counting
+subagents](#counting-subagents). It is the one number here that says nothing about
+the state beside it: a session that has handed five background agents their work
+and gone quiet reads `idle 5a`, and that is right. It will answer you now; its
+fleet is still busy.
 
 Under the rows is one line per window, each totalling the cost column over a
 longer reach than the one above it:
@@ -469,8 +469,7 @@ differently.
 
 ### Counting subagents
 
-`5a` in a row is how many subagents that session has in flight, and `5 agents` in
-the header is the fleet's.
+`5a` in a row is how many subagents that session has in flight.
 
 There is nothing on the screen to count: Claude's fleet view lists agents only
 while it is open, and it is not on screen at all in a session nobody is looking at.
