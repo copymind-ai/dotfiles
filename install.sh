@@ -110,6 +110,18 @@ else
   ok "pgflow already installed"
 fi
 
+# --- Ghostty ---
+# A cask, not a formula, so it can't join the package loop above. Gated on the
+# app bundle rather than `command -v ghostty`: the CLI binary lives inside the
+# bundle and isn't on PATH, so a `command -v` check would reinstall every run.
+# The config itself is symlinked further down.
+if [ -d "/Applications/Ghostty.app" ] || [ -d "$HOME/Applications/Ghostty.app" ]; then
+  ok "Ghostty already installed"
+else
+  info "Installing Ghostty..."
+  brew install --cask ghostty
+fi
+
 # --- Oh My Zsh ---
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
   info "Installing Oh My Zsh..."
