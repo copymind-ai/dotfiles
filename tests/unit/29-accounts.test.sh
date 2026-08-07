@@ -31,6 +31,14 @@ status_tick() { # one render for session $1: cost $2 (default 1.00), 5h $3 (7)
     env CLAUDE_CONFIG_DIR="$ROOT/cfg" TMUX= TMUX_PANE= bash "$STATUSLINE" >/dev/null
 }
 
+pane_tick() { # the same, but from inside tmux, so the export is keyed by pane
+  printf '{"context_window":{"used_percentage":10},"cost":{"total_cost_usd":%s},"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s}},"model":{"display_name":"Test"},"session_id":"%s"}' \
+    "${2:-1.00}" "${3:-7}" "$AHEAD" "$AHEAD" "$1" | \
+    env CLAUDE_CONFIG_DIR="$ROOT/cfg" TMUX="/tmp/sock,4242,0" TMUX_PANE="%7" \
+      bash "$STATUSLINE" >/dev/null
+}
+PANE_META="$CLAUDE_MONITOR_DIR/4242-7.meta"
+
 value_of() { # value for key $2 in the key=value file $1, or "none"
   [ -r "$1" ] || { echo none; return; }
   local k v
@@ -92,6 +100,24 @@ assert_eq "an unchanged config is read from the cache, not re-parsed" \
   "fromcache@example.com" "$(value_of "$CLAUDE_MONITOR_DIR/sess-sess-a.meta" acct)"
 config carol@example.com
 touch "$ROOT/cfg/.claude.json"      # newer than the cache again
+
+header "a pane's next session does not inherit the last one's account"
+# The export is keyed by tmux server pid and pane, so the first render of a new
+# session in a reused pane compares itself against the previous occupant's
+# reading. Same numbers here, deliberately: only the id says it is a different
+# session, and that has to be enough on its own.
+config dave@example.com
+touch "$ROOT/cfg/.claude.json"
+pane_tick sess-first 4.00 11
+assert_eq "the pane's first session" \
+  "dave@example.com" "$(value_of "$PANE_META" acct)"
+config erin@example.com
+touch "$ROOT/cfg/.claude.json"
+pane_tick sess-second 4.00 11         # identical reading, different session
+assert_eq "a new session in that pane is read afresh" \
+  "erin@example.com" "$(value_of "$PANE_META" acct)"
+assert_eq "and the export names the new session" \
+  "sess-second" "$(value_of "$PANE_META" session)"
 
 header "a config with no account in it exports nothing rather than a guess"
 printf '{"numStartups":3}\n' > "$ROOT/cfg/.claude.json"

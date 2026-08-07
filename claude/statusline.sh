@@ -103,18 +103,19 @@ fi
 
 # What this session exported last time. Read once, for both the account below and
 # the overage arithmetic further down.
-p_cost=0 p_lim5=-1 p_lim7=-1 p_rst5=0 p_rst7=0 p_over=0 p_acct="" p_had=""
+p_cost=0 p_lim5=-1 p_lim7=-1 p_rst5=0 p_rst7=0 p_over=0 p_acct="" p_sess="" p_had=""
 if [ -n "$key" ] && [ -r "$dir/$key.meta" ]; then
   p_had=1
   while IFS='=' read -r _k _v; do
     case $_k in
-      cost) p_cost=$_v ;;
-      lim5) p_lim5=$_v ;;
-      lim7) p_lim7=$_v ;;
-      rst5) p_rst5=$_v ;;
-      rst7) p_rst7=$_v ;;
-      over) p_over=$_v ;;
-      acct) p_acct=$_v ;;
+      cost)    p_cost=$_v ;;
+      lim5)    p_lim5=$_v ;;
+      lim7)    p_lim7=$_v ;;
+      rst5)    p_rst5=$_v ;;
+      rst7)    p_rst7=$_v ;;
+      over)    p_over=$_v ;;
+      acct)    p_acct=$_v ;;
+      session) p_sess=$_v ;;
     esac
   done < "$dir/$key.meta"
 fi
@@ -149,8 +150,17 @@ fi
 # After a global switch that is the new one for everybody, whatever their last
 # reading says -- and nothing observable from out here distinguishes a session
 # that has quietly picked up new credentials from one that has not.
+#
+# The session id is checked alongside the numbers because a pane outlives the
+# session in it: the export is keyed by tmux server pid and pane, so the first
+# render of a new session in a reused pane compares itself against the previous
+# occupant's reading. That normally reads as a change anyway -- a new session
+# starts at no cost -- but only by coincidence, and a label inherited from a
+# session that has ended belongs to nothing on the screen. The id is what makes
+# it a different reading by construction.
 acct=$p_acct
 if [ -z "$p_had" ] || [ -z "$p_acct" ] ||
+   [ "$session" != "$p_sess" ] ||
    [ "$lim5" != "$p_lim5" ] || [ "$lim7" != "$p_lim7" ] ||
    [ "$rst5" != "$p_rst5" ] || [ "$rst7" != "$p_rst7" ] ||
    [ "$cost" != "$p_cost" ]; then
