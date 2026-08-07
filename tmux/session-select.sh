@@ -8,15 +8,17 @@
 # Replaces tmux's own choose-session, whose labels start at 0 and switch to M-a
 # from the tenth entry on, and are not configurable.
 #
-# Keys: 1-9 then a-z switch to that session directly. hjkl (or the arrow keys)
-# move the cursor and enter switches to it; h and l change column, so they do
-# nothing while the list is one column wide. x kills the session under the
-# cursor, after a y/n confirmation. esc cancels, and any other key is ignored
-# rather than closing the popup under you.
+# Keys: 1-9 then a-z switch to that session directly, bar the monitor session,
+# which is always M -- the key that opens it from outside the picker. hjkl (or
+# the arrow keys) move the cursor and enter switches to it; h and l change
+# column, so they do nothing while the list is one column wide. x kills the
+# session under the cursor, after a y/n confirmation. esc cancels, and any other
+# key is ignored rather than closing the popup under you.
 #
 # Tunables: PICKER_FILTER (regex; only sessions matching it are listed, default
 # all), PICKER_WIDTH (popup width, default 56), PICKER_COLW (width of one column
-# once the list needs more than one, default 30).
+# once the list needs more than one, default 30), MONITOR_SESSION (the session
+# that gets the M key, default "monitor" -- the same variable monitor.sh reads).
 #
 # PICKER_CLIENT, PICKER_COLS, PICKER_ROWS and PICKER_CHROME are handed to --run
 # by the popup that sized it; they are not meant to be set by hand.
@@ -31,10 +33,18 @@ COLW=${PICKER_COLW:-30}
 COLW_MIN=22   # narrowest a column may get before another one is out of the question
 
 # Digits first -- they match the muscle memory of window indices -- then the
-# alphabet less hjkl, which move the cursor instead, and less x, which kills.
-# 30 keys in total; anything past that is listed without one, and has to be
-# reached with the cursor.
-KEYS="123456789abcdefgimnopqrstuvwyz"
+# alphabet less hjkl, which move the cursor instead, less x, which kills, and
+# less m, which is held for the monitor. 29 keys in total; anything past that is
+# listed without one, and has to be reached with the cursor.
+KEYS="123456789abcdefginopqrstuvwyz"
+
+# The monitor session is not keyed by its position in the list: it answers to M
+# wherever it sorts, so the key that reaches it from the picker is the one that
+# opens it from anywhere else (prefix+M). m is kept out of KEYS above so no other
+# session can take it, whether or not the monitor is running, and both cases are
+# accepted -- prefix+M is typed with shift, the picker's other keys are not.
+MON=${MONITOR_SESSION:-monitor}
+MON_KEY="M"
 
 # T_HIDE/T_SHOW hide the terminal's own cursor while the picker is up: it would
 # otherwise sit wherever drawing happened to stop -- the bottom right corner --
@@ -133,6 +143,7 @@ picker_kill() {
 
 ENTRIES=()    # "windows|attached|name", as listed
 SESSIONS=()   # just the names, same order
+ROWKEYS=()    # the jump key of each, same order; " " for the ones past the last
 ROWS_USED=0   # rows the last render laid out, i.e. what one column step is worth
 VISIBLE=0     # entries the last render actually drew; the cursor stays within them
 PROMPT=""     # question to put where the footer goes, while one is being asked
@@ -140,15 +151,26 @@ PROMPT=""     # question to put where the footer goes, while one is being asked
 # Snapshots the list. The cursor and the drawing have to agree on one list, so
 # they both work from this rather than each running tmux themselves.
 picker_load() {
-  local line name
+  local line name key next=0
   ENTRIES=()
   SESSIONS=()
+  ROWKEYS=()
   while IFS= read -r line; do
     name=${line#*|}
     name=${name#*|}
     [ -n "$name" ] || continue
     ENTRIES+=("$line")
     SESSIONS+=("$name")
+    # The monitor takes M and spends none of the pool, so the sessions around it
+    # keep the keys they would have had were it not running at all.
+    if [ "$name" = "$MON" ]; then
+      key=$MON_KEY
+    else
+      key=${KEYS:$next:1}
+      [ -n "$key" ] || key=' '   # past the last key: reachable with the cursor only
+      next=$((next + 1))
+    fi
+    ROWKEYS+=("$key")
   done < <(picker_sessions)
 }
 
@@ -189,8 +211,7 @@ render() {
     att=${line#*|}
     name=${att#*|}
     att=${att%%|*}
-    key=${KEYS:$i:1}
-    [ -n "$key" ] || key=' '   # past the last key: reachable with the cursor only
+    key=${ROWKEYS[$i]}
     # The session this client is on is marked, not hidden, so the keys stay put
     # no matter which session you press prefix+S from.
     if [ "$name" = "$cur" ]; then mark="*"
@@ -262,7 +283,7 @@ render() {
           "$T_EL" \
           "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
           "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST" "$T_EL"
-        printf '%s  %s1-9/a-z%s jump   %sesc%s cancel   %s*%s here   %s+%s attached%s' \
+        printf '%s  %s1-9/a-z/M%s jump   %sesc%s cancel   %s*%s here   %s+%s attached%s' \
           "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
           "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST$C_YEL" "$C_RST$C_DIM" "$C_RST"
       fi
@@ -276,11 +297,17 @@ render() {
   } 2>/dev/null
 }
 
-key_index() { # position of $1 in KEYS, or -1
-  local i=0 c
-  while [ "$i" -lt ${#KEYS} ]; do
-    c=${KEYS:$i:1}
-    [ "$c" = "$1" ] && { printf '%s' "$i"; return; }
+# Position of the entry keyed $1, or -1. The keys are looked up in the list
+# rather than in KEYS because the monitor's is not one of them, and because a
+# blank key -- what the entries past the last one carry -- must match nothing.
+key_index() {
+  local want=$1 i=0
+  { [ -n "$want" ] && [ "$want" != ' ' ]; } || { printf -- '-1'; return; }
+  # m reaches the monitor as readily as M does: shift is what prefix+M needs,
+  # not what the picker's other keys are typed with.
+  [ "$want" = m ] && want=$MON_KEY
+  while [ "$i" -lt ${#ROWKEYS[@]} ]; do
+    [ "${ROWKEYS[$i]}" = "$want" ] && { printf '%s' "$i"; return; }
     i=$((i + 1))
   done
   printf -- '-1'

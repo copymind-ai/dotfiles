@@ -161,11 +161,12 @@ first, then `a`-`z`, so switching is one keystroke:
   1  admin                     1w
 ▸ 2 *dotfiles                  3w
   3 +graspen-course-ai         2w
+  M +monitor                   1w
   ...
   c  zz-other                  1w
 
   j/k move  h/l column  enter switch  esc cancel
-  1-9/a-z jump directly   * here   + attached
+  1-9/a-z/M jump directly   * here   + attached
 ```
 
 Either press a session's key, or walk the cursor to it with `j`/`k` (or the
@@ -187,16 +188,24 @@ Notes:
   they only shift when a session is created or destroyed. The cursor follows the
   session it is on, not its index, so a session appearing or going away while the
   popup is open does not move it.
+- The [monitor](#session-monitor) is always `M`, wherever it sorts, so the key
+  that reaches it from here is the one that opens it from anywhere else
+  (`prefix + M`). Lowercase `m` does the same, and is held for it whether or not
+  the monitor is running — so the sessions around it keep their keys either way.
+  `M` works even when the monitor is one of the entries a short client pushed
+  off the end.
 - A list too tall for the client flows into up to three columns, filled top to
   bottom, rather than scrolling the first keys off the top. A client too short
   even for that loses the header first, and says `... N more` if entries still
   do not fit.
 - `h`, `j`, `k` and `l` are left out of the jump keys because they drive the
-  cursor. Past the 31st session there are no keys left; those are listed, and
+  cursor, `x` because it kills, and `m` because the monitor holds it. That is 29
+  keys plus the monitor's `M`; sessions past them are listed without one, and
   reachable with the cursor.
 - Tunables: `PICKER_FILTER` (regex; list only matching sessions),
   `PICKER_WIDTH` (popup width, default 56), `PICKER_COLW` (width of one column
-  once there is more than one, default 30).
+  once there is more than one, default 30), `MONITOR_SESSION` (the session that
+  gets `M`, default `monitor` — the same variable the monitor itself reads).
 
 ## Session monitor
 
