@@ -232,14 +232,19 @@ its Claude window is doing right now.
                                         30d $2620.11  sub ~$2540.11  api $80.00
                                         all $8841.66  sub ~$8601.66  api $240.00
 
-  j/k move   enter jump   1-9/a-z jump directly   r refresh   q quit
+  j/k move   enter jump   1-9/a-z jump directly   r refresh   q back
 ```
 
 Press a session's key to jump to it, or move the cursor with `j`/`k` (or the
 arrow keys) and hit `enter`. The cursor's row is highlighted (shown above as `▸`,
 which is also drawn, so the cursor survives a terminal with no colors). Only the
 client showing the monitor moves, so other attached clients are left where they
-are. `q` or `esc` closes the monitor.
+are. `q` or `esc` closes the monitor and puts the client back on the session it
+came from, rather than dropping it out of tmux — the monitor's session ends on
+the way out, and a client attached to a session that gets destroyed would
+otherwise detach. If there is nowhere to go back to — attached straight to the
+monitor with `tmux attach -t monitor`, or it is the only session left — `q` still
+detaches.
 
 `h`, `j`, `k` and `l` are left out of the jump keys because they drive the
 cursor — `h`/`l` do nothing here, the list being one column — and so are `q` and

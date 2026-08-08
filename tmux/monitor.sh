@@ -9,7 +9,8 @@
 #
 # Keys: 1-9 then a-z jump straight to that session. j/k (or the arrow keys) move
 # the cursor and enter jumps to it; h and l do nothing, the list being one column.
-# r refreshes now, q (or esc) quits.
+# r refreshes now, q (or esc) closes the monitor and puts the client back on the
+# session it came from.
 #
 # Every session is listed except the monitor itself. For each one it picks the
 # pane to report on: a pane actually running Claude, else one in a window named
@@ -1791,7 +1792,7 @@ monitor_draw() {
     printf '%s' "$acc"
     printf '%s' "$out"
     printf '%s\n' "$T_EL"
-    printf '%s  %sj/k%s move   %senter%s jump   %s1-9/a-z%s jump directly   %sr%s refresh   %sq%s quit%s%s\n' \
+    printf '%s  %sj/k%s move   %senter%s jump   %s1-9/a-z%s jump directly   %sr%s refresh   %sq%s back%s%s\n' \
       "$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
       "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST$C_BOLD" "$C_RST$C_DIM" \
       "$C_RST$C_BOLD" "$C_RST$C_DIM" "$C_RST" "$T_EL"
@@ -1801,14 +1802,14 @@ monitor_draw() {
 
 # --- keys -------------------------------------------------------------------
 
-# Switch the client that is looking at this session over to a target session.
+# The client looking at this session, for the commands below to aim at.
 #
-# The client has to be resolved explicitly: a bare `switch-client -t` picks an
-# arbitrary client when it has no context, which means it can yank a client
-# attached to a completely unrelated session. So if we cannot identify the client
-# for our own session, we do nothing rather than move someone else's view.
-monitor_switch() {
-  local target=$1 sess client
+# It has to be resolved explicitly: a bare `switch-client` picks an arbitrary
+# client when it has no context, which means it can yank a client attached to a
+# completely unrelated session. So if we cannot identify the client for our own
+# session, we do nothing rather than move someone else's view.
+monitor_client() {
+  local sess client
   [ -n "${TMUX:-}" ] || return 1
   client=$(tmux display-message -p '#{client_name}' 2>/dev/null)
   if [ -z "$client" ]; then
@@ -1817,7 +1818,27 @@ monitor_switch() {
     client=$(tmux list-clients -t "$sess" -F '#{client_name}' 2>/dev/null | head -1)
   fi
   [ -n "$client" ] || return 1
+  printf '%s' "$client"
+}
+
+# Move that client over to a target session.
+monitor_switch() {
+  local target=$1 client
+  client=$(monitor_client) || return 1
   tmux switch-client -c "$client" -t "$target" 2>/dev/null
+}
+
+# Leaving the monitor puts the client back where it came from, rather than
+# letting it fall out of tmux altogether. Quitting ends the monitor's session,
+# and a client attached to a session that gets destroyed detaches
+# (detach-on-destroy is on by default) -- so the client is walked to its last
+# session first, and only then is the loop allowed to end. With no last session
+# to go to (attached straight to the monitor, or it is the only one left) there
+# is nothing to do and the old behaviour stands.
+monitor_back() {
+  local client
+  client=$(monitor_client) || return 1
+  tmux switch-client -c "$client" -l 2>/dev/null
 }
 
 key_index() { # position of $1 in KEYS, or -1
@@ -1914,6 +1935,11 @@ run_monitor() {
       monitor_collect   # the interval ran out: time for a fresh tick
     fi
   done
+  # The terminal goes back first so the pane is left clean, then the client is
+  # walked back to where it came from -- while this session, and the client's
+  # attachment to it, are both still alive.
+  monitor_raw_off
+  monitor_back
 }
 
 open_session() {
