@@ -188,35 +188,41 @@ agent_cents() {
         (.usage.output_tokens // 0) ]
     | @tsv' "$1" 2>/dev/null |
   awk -F'\t' '
-    # Dollars per million tokens, by family rather than by exact id: the ids
-    # carry suffixes that say nothing about the rate -- "[1m]", a vendor prefix,
-    # a version tail -- and a model released next month is priced like its
-    # siblings instead of being dropped. Sonnet is at its standard rate, so an
-    # agent on it reads high until the introductory rate lapses on 2026-08-31.
+    # Dollars per million tokens -- input, output, cache read -- matched on a
+    # pattern rather than an exact id: the ids carry suffixes that say nothing
+    # about the rate -- "[1m]", a vendor prefix, a version tail -- and a model
+    # released next month is priced like its siblings instead of being dropped.
+    #
+    # By generation within a family, because one family has several rates: Opus
+    # 5.5 is cheaper than Opus 5, and the newer models read cache at less than
+    # the tenth of input the older ones do. Cache reads are most of what an agent
+    # spends, so their rate is set per model rather than derived from the input.
+    # The newest pattern of each family goes first; a later one would shadow it.
+    #
+    # (No apostrophes in here. The program is single-quoted, so one would end it
+    # and break the hook for every event.)
     #
     # Server tool calls (web search) are not in here: they are billed per request
     # rather than per token, and the transcript counts them separately. A search-
     # heavy agent therefore reads a little low.
-    BEGIN {
-      IN["fable"]  = 10; OUT["fable"]  = 50
-      IN["opus"]   = 5;  OUT["opus"]   = 25
-      IN["sonnet"] = 3;  OUT["sonnet"] = 15
-      IN["haiku"]  = 1;  OUT["haiku"]  = 5
-    }
-    function family(m) {
-      if (m ~ /fable|mythos/) return "fable"
-      if (m ~ /sonnet/)       return "sonnet"
-      if (m ~ /haiku/)        return "haiku"
+    function rates(m) {
+      if (m ~ /(fable|mythos)-5-1/)  { I = 10; O = 50; R = 0.25; return }
+      if (m ~ /fable|mythos/)        { I = 10; O = 50; R = 1;    return }
+      if (m ~ /opus-5-5/)            { I = 4;  O = 20; R = 0.20; return }
+      if (m ~ /sonnet-4/)            { I = 3;  O = 15; R = 0.30; return }
+      if (m ~ /sonnet/)              { I = 2;  O = 10; R = 0.20; return }
+      if (m ~ /haiku/)               { I = 1;  O = 5;  R = 0.10; return }
       # Opus by name, and anything unrecognized along with it: a model this does
       # not know is far likelier to be a new Opus than to be free.
-      return "opus"
+      I = 5; O = 25; R = 0.50
     }
     $1 != "" && seen[$1]++ { next }
     {
-      f = family($2); i = IN[f] / 1000000; o = OUT[f] / 1000000
-      # Each kind of token at its own multiple of the input rate, rather than all
-      # of them at the input rate: that is the whole reason this is priced here.
-      c += $3 * i + $4 * i * 1.25 + $5 * i * 2 + $6 * i * 0.1 + $7 * o
+      rates($2); i = I / 1000000; o = O / 1000000; r = R / 1000000
+      # Each kind of token at its own rate, rather than all of them at the input
+      # rate: that is the whole reason this is priced here. Cache writes stay a
+      # multiple of input on every model.
+      c += $3 * i + $4 * i * 1.25 + $5 * i * 2 + $6 * r + $7 * o
     }
     END { printf "%d\n", int(c * 100 + 0.5) }
   '
